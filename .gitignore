@@ -1,0 +1,14 @@
+*.ipa
+*.zip
+*.dylib
+*.deb
+*.p12
+*.mobileprovision
+.env
+.signing.env
+.DS_Store
+__pycache__/
+*.pyc
+NativeDownloads/build/
+NativeDownloads/outputs/
+vitrine/

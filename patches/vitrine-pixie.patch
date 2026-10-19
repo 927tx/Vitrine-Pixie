@@ -1,0 +1,209 @@
+diff --git a/harness/album/build.sh b/harness/album/build.sh
+index 79e59b7..02ba604 100755
+--- a/harness/album/build.sh
++++ b/harness/album/build.sh
+@@ -21,7 +21,7 @@ xcrun -sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-ar
+     "$SRC"/Redesigned/Kit/SGRGlass.m "$SRC"/Redesigned/Kit/SGRGlyph.m "$SRC"/Redesigned/Kit/SGRRestyle.m \
+     "$SRC"/Redesigned/Kit/SGRActionRow.m "$SRC"/Redesigned/Kit/SGRDownload.m "$SRC"/Redesigned/Kit/SGRHeaderInfo.m \
+     "$SRC"/Redesigned/Kit/SGRedesign.m "$SRC"/Redesigned/Album/AlbumCredits.m \
+-    -framework UIKit -framework QuartzCore -framework CoreGraphics -framework CoreImage -framework Foundation -framework Symbols -framework AVFoundation -framework CoreMedia \
++    -framework UIKit -framework QuartzCore -framework CoreGraphics -framework CoreImage -framework Foundation -framework Symbols -framework AVFoundation -framework CoreMedia -framework CoreText \
+     -o "$OUT/AlbumHarness.app/AlbumHarness"
+ 
+ cat > "$OUT/AlbumHarness.app/Info.plist" <<'PLIST'
+diff --git a/harness/album/main.m b/harness/album/main.m
+index b5eb9c3..7a1dc2e 100644
+--- a/harness/album/main.m
++++ b/harness/album/main.m
+@@ -4,6 +4,48 @@
+ #import <objc/runtime.h>
+ #import <AVFoundation/AVFoundation.h>
+ #import "../download-mock.h"
++#import "Redesigned/Kit/SGRHeaderInfo.h"
++#import "Redesigned/Kit/SGRActionRow.h"
++#include <assert.h>
++
++static void verifyAlbumActions(UIView *root) {
++    NSMutableArray *pending=[NSMutableArray arrayWithObject:root];SGRHeaderInfo *info=nil;
++    while(pending.count){UIView *v=pending.lastObject;[pending removeLastObject];
++        if([v isKindOfClass:SGRHeaderInfo.class]){info=(id)v;break;}[pending addObjectsFromArray:v.subviews];}
++    assert(info);
++    SGRMirrorButton *download=[info valueForKey:@"albumDownload"];
++    SGRMirrorButton *shuffle=[info valueForKey:@"shuffle"],*add=[info valueForKey:@"trailing"];
++    SGRPlayCapsule *play=[info valueForKey:@"play"];
++    UIScrollView *group=[info valueForKey:@"albumControls"];
++    assert(download && !download.hidden && download.source && add.source && !add.hidden);
++    CGRect original=info.frame;
++    for(NSNumber *width in @[@430,@390,@320]){
++        CGRect frame=original;frame.size.width=width.doubleValue;info.frame=frame;
++        [info setNeedsLayout];[info layoutIfNeeded];
++        assert(fabs(CGRectGetMaxX(play.frame)-(width.doubleValue-20))<1);
++        assert(CGRectGetMaxX(group.frame)+15<=CGRectGetMinX(play.frame));
++        assert(!CGRectIntersectsRect(shuffle.frame,download.frame));
++        assert(!CGRectIntersectsRect(download.frame,add.frame));
++        assert(fabs(CGRectGetMaxX(add.frame)-group.contentSize.width)<1);
++        if(width.intValue==320)assert(group.scrollEnabled);
++    }
++    info.frame=original;[info setNeedsLayout];[info layoutIfNeeded];
++    UIControl *source=(UIControl *)download.source;__block NSUInteger fired=0;
++    UIAction *action=[UIAction actionWithTitle:@"verify" image:nil identifier:@"verify-album-download" handler:^(UIAction *a){fired++;}];
++    [source addAction:action forControlEvents:UIControlEventTouchUpInside];
++    [download sendActionsForControlEvents:UIControlEventTouchUpInside];
++    [source removeActionForIdentifier:@"verify-album-download" forControlEvents:UIControlEventTouchUpInside];
++    assert(fired==1);
++    SGRHeaderInfo *ordinary=[[SGRHeaderInfo alloc]initWithFrame:CGRectMake(0,0,430,400)];
++    [ordinary showShuffle:shuffle.source play:play.source trailing:add.source trailingFallback:nil playColor:nil];
++    [ordinary setNeedsLayout];[ordinary layoutIfNeeded];
++    UIView *ordinaryPlay=[ordinary valueForKey:@"play"];
++    assert([ordinary valueForKey:@"albumControls"]==nil && fabs(CGRectGetMidX(ordinaryPlay.frame)-215)<1);
++    NSDictionary *result=@{@"passed":@YES,@"album_download_and_add_visible":@YES,@"native_download_action_calls":@(fired),@"checked_widths":@[@430,@390,@320],@"default_layout_unchanged":@YES};
++    NSString *path=[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject stringByAppendingPathComponent:@"album-actions-verification.json"];
++    [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil]writeToFile:path atomically:YES];
++    NSLog(@"[harness] PASS album controls: both buttons, native action once, Play right, 430/390/320 widths, default layout unchanged");
++}
+ 
+ #pragma mark - Spotify's classes, by name
+ 
+@@ -656,6 +698,8 @@ static NSString *trailingLabel(UIView *root) {
+         NSLog(@"[harness] Spotify's own frames put back; the redesign answered with title stack %@, action row %@",
+               NSStringFromCGRect(self->_titleStack.frame), NSStringFromCGRect(self->_actionRow.frame));
+     });
++    if([NSProcessInfo.processInfo.arguments containsObject:@"verify-actions"])
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,4200*NSEC_PER_MSEC),dispatch_get_main_queue(),^{verifyAlbumActions(root.view);});
+     return YES;
+ }
+ 
+diff --git a/scripts/extract-flags.py b/scripts/extract-flags.py
+index 4563ba0..c689293 100755
+--- a/scripts/extract-flags.py
++++ b/scripts/extract-flags.py
+@@ -44,8 +44,10 @@ class Binary:
+             if m:
+                 self.keys[BASE + int(m.group(1), 16)] = m.group(2)
+         self.thunks = []
+-        for line in subprocess.run(['nm', '-n', path], capture_output=True, text=True).stdout.splitlines():
+-            m = re.match(r'^([0-9a-f]+) [tT] -\[\S+ initWithConfigurationProvider:\]$', line)
++        # Read ObjC IMPs directly. nm's synthesized symbol listing on a large
++        # stripped Spotify image can spend minutes sorting unrelated symbols.
++        for line in subprocess.run(['xcrun', 'dyld_info', '-objc', path], check=True, capture_output=True, text=True).stdout.splitlines():
++            m = re.match(r'\s+0x([0-9a-fA-F]+)\s+-\[\S+ initWithConfigurationProvider:\]$', line)
+             if m:
+                 self.thunks.append(int(m.group(1), 16))
+ 
+diff --git a/tweak/Sources/Redesigned/Album/AlbumHeader.x b/tweak/Sources/Redesigned/Album/AlbumHeader.x
+index 4b48da5..1bcf457 100644
+--- a/tweak/Sources/Redesigned/Album/AlbumHeader.x
++++ b/tweak/Sources/Redesigned/Album/AlbumHeader.x
+@@ -475,9 +475,8 @@ static SGRHeaderInfo *applyInfo(UIView *header, UIView *page) {
+     UIView *play = floatingIn(page, @"header-play-button", &kPlayKey);
+     UIView *shuffle = floatingIn(page, @"Components.UI.ShuffleButton", &kShuffleKey);
+     UIView *add = SGRFindByIdentifier(header, @"Components.UI.AddToButton", &kAddKey);
+-    UIView *download = add ? nil : SGRFindByIdentifier(header, @"DownloadButton.Granular*", &kDownloadKey);
+-    [info showShuffle:shuffle play:play trailing:add ?: download
+-     trailingFallback:[UIImage systemImageNamed:add ? @"plus" : @"arrow.down"] playColor:SGRAlbumFieldColor(header)];
++    UIView *download = SGRFindByIdentifier(header, @"DownloadButton.Granular*", &kDownloadKey);
++    [info showAlbumShuffle:shuffle play:play download:download add:add playColor:SGRAlbumFieldColor(header)];
+     // Only what the two floating buttons draw goes: a concealed layer still sends the actions the row fires.
+     if (play) conceal(wrapperFor(play, page));
+     if (shuffle) conceal(wrapperFor(shuffle, page));
+diff --git a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
+index 0aa02f5..9c450c3 100644
+--- a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
++++ b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
+@@ -44,6 +44,10 @@ extern const CGFloat SGRHeaderInfoTitleRise;  // 56, of the content over the pic
+ // has no image to copy. `playColor` is the color of the capsule's glyph and word.
+ - (void)showShuffle:(UIView *)shuffle play:(UIView *)play trailing:(UIView *)trailing
+    trailingFallback:(UIImage *)trailingFallback playColor:(UIColor *)playColor;
++// Album-only row: Play at the trailing edge, the independent shuffle, download
++// and add controls at the leading edge. Narrow widths scroll only that group.
++- (void)showAlbumShuffle:(UIView *)shuffle play:(UIView *)play download:(UIView *)download
++                    add:(UIView *)add playColor:(UIColor *)playColor;
+ // A picture drawn in the title's place, such as an artist's logo; the title stays its spoken name. nil
+ // draws the title again.
+ - (void)showTitleImage:(UIImage *)image;
+diff --git a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.m b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.m
+index b62b752..7258401 100644
+--- a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.m
++++ b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.m
+@@ -62,6 +62,8 @@ UIImageView *SGRCreatorPicture(UIView *root) {
+     UIImage *_titleImage;   // what the title's place is laid out for; the logo keeps its picture while it fades out
+     SGRMirrorButton *_shuffle, *_trailing;
+     SGRPlayCapsule *_play;
++    UIScrollView *_albumControls;
++    SGRMirrorButton *_albumDownload;
+     __weak UIView *_creatorLink;
+ }
+ 
+@@ -260,6 +262,34 @@ UIImageView *SGRCreatorPicture(UIView *root) {
+     if (_trailing.source) [_trailing feedFrom:_trailing.source];
+ }
+ 
++- (void)showAlbumShuffle:(UIView *)shuffle play:(UIView *)play download:(UIView *)download
++                    add:(UIView *)add playColor:(UIColor *)playColor {
++    if (!_albumControls) {
++        _albumControls = [UIScrollView new];
++        _albumControls.showsHorizontalScrollIndicator = NO;
++        _albumControls.showsVerticalScrollIndicator = NO;
++        _albumControls.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
++        _albumControls.delaysContentTouches = NO;
++        _albumControls.directionalLockEnabled = YES;
++        _albumControls.accessibilityIdentifier = @"Vitrine.Album.Actions";
++        [self addSubview:_albumControls];
++        [_albumControls addSubview:_shuffle];
++        _albumDownload = [[SGRMirrorButton alloc] initWithFrame:CGRectZero];
++        _albumDownload.fallbackGlyph = [UIImage systemImageNamed:@"arrow.down"];
++        _albumDownload.accessibilityIdentifier = @"Vitrine.Album.Download";
++        [_albumControls addSubview:_albumDownload];
++        [_albumControls addSubview:_trailing];
++    }
++    [self showShuffle:shuffle play:play trailing:add
++     trailingFallback:[UIImage systemImageNamed:@"plus"] playColor:playColor];
++    if (download) [_albumDownload feedFrom:download];
++    BOOL hide = download == nil;
++    if (_albumDownload.hidden != hide) {
++        _albumDownload.hidden = hide;
++        [self setNeedsLayout];
++    }
++}
++
+ - (CGFloat)contentHeightForWidth:(CGFloat)width {
+     CGFloat text = MAX(0, width - 2 * kSide), height = 0;
+     UILabel *previous = nil;
+@@ -312,6 +342,27 @@ UIImageView *SGRCreatorPicture(UIView *root) {
+     }
+     if (previous) y += kRowAbove;
+ 
++    if (_albumControls) {
++        CGFloat side = SGRActionHeight;
++        CGFloat playWidth = MIN(MAX(kPlayWidth, [_play sgr_width]), MAX(0, text - side - kRowSpacing));
++        BOOL rtl = self.effectiveUserInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
++        CGFloat playX = rtl ? kSide : width - kSide - playWidth;
++        _play.frame = CGRectMake(playX, y, playWidth, side);
++        CGFloat groupWidth = MAX(0, text - playWidth - kRowSpacing);
++        _albumControls.frame = CGRectMake(rtl ? CGRectGetMaxX(_play.frame) + kRowSpacing : kSide, y, groupWidth, side);
++        CGFloat x = 0;
++        for (UIView *button in @[_shuffle, _albumDownload, _trailing]) {
++            if (button.hidden) continue;
++            button.frame = CGRectMake(x, 0, side, side);
++            x += side + 12;
++        }
++        CGSize size = CGSizeMake(MAX(0, x - 12), side);
++        if (!CGSizeEqualToSize(_albumControls.contentSize, size)) _albumControls.contentSize = size;
++        _albumControls.scrollEnabled = size.width > groupWidth + 0.5;
++        CGFloat limit = MAX(0, size.width - groupWidth);
++        if (_albumControls.contentOffset.x > limit)
++            _albumControls.contentOffset = CGPointMake(limit, 0);
++    } else {
+     // Play on the middle of the page, the other two hung off its sides, so it holds its place whether both
+     // are there or not.
+     CGFloat side = SGRActionHeight;
+@@ -321,7 +372,8 @@ UIImageView *SGRCreatorPicture(UIView *root) {
+     _play.frame = play;
+     _shuffle.frame = CGRectMake(CGRectGetMinX(play) - kRowSpacing - side, y, side, side);
+     _trailing.frame = CGRectMake(CGRectGetMaxX(play) + kRowSpacing, y, side, side);
+-    y += side;
++    }
++    y += SGRActionHeight;
+ 
+     if (!_about.hidden) {
+         y += kAboutAbove;
