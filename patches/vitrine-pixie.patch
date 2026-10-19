@@ -73,6 +73,99 @@ index b5eb9c3..7a1dc2e 100644
      return YES;
  }
  
+diff --git a/harness/playlist/build.sh b/harness/playlist/build.sh
+index 94411c6..3175289 100755
+--- a/harness/playlist/build.sh
++++ b/harness/playlist/build.sh
+@@ -21,7 +21,7 @@ xcrun -sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-ar
+     "$SRC"/Redesigned/Kit/SGRGlass.m "$SRC"/Redesigned/Kit/SGRGlyph.m "$SRC"/Redesigned/Kit/SGRRestyle.m \
+     "$SRC"/Redesigned/Kit/SGRActionRow.m "$SRC"/Redesigned/Kit/SGRDownload.m "$SRC"/Redesigned/Kit/SGRHeaderInfo.m \
+     "$SRC"/Redesigned/Kit/SGRedesign.m \
+-    -framework UIKit -framework QuartzCore -framework CoreGraphics -framework CoreImage -framework Foundation -framework Symbols \
++    -framework UIKit -framework QuartzCore -framework CoreGraphics -framework CoreImage -framework Foundation -framework Symbols -framework CoreText \
+     -o "$OUT/PlaylistHarness.app/PlaylistHarness"
+ 
+ cat > "$OUT/PlaylistHarness.app/Info.plist" <<'PLIST'
+diff --git a/harness/playlist/main.m b/harness/playlist/main.m
+index 3c4db0d..08f638d 100644
+--- a/harness/playlist/main.m
++++ b/harness/playlist/main.m
+@@ -3,6 +3,52 @@
+ #import <UIKit/UIKit.h>
+ #import <objc/runtime.h>
+ #import "../download-mock.h"
++#import "Redesigned/Kit/SGRHeaderInfo.h"
++#import "Redesigned/Kit/SGRActionRow.h"
++#include <assert.h>
++
++static void verifyMixActions(UIView *root, BOOL independent) {
++    NSMutableArray *pending = [NSMutableArray arrayWithObject:root];
++    SGRHeaderInfo *info = nil;
++    while (pending.count) {
++        UIView *view = pending.lastObject;
++        [pending removeLastObject];
++        if ([view isKindOfClass:SGRHeaderInfo.class]) { info = (id)view; break; }
++        [pending addObjectsFromArray:view.subviews];
++    }
++    assert(info);
++    UIScrollView *group = [info valueForKey:@"albumControls"];
++    SGRPlayCapsule *play = [info valueForKey:@"play"];
++    if (independent) {
++        SGRMirrorButton *download = [info valueForKey:@"albumDownload"];
++        SGRMirrorButton *save = [info valueForKey:@"trailing"];
++        assert(group && download.source && !download.hidden && save.source && !save.hidden);
++        CGRect original = info.frame;
++        for (NSNumber *width in @[@430, @390, @320]) {
++            CGRect frame = original; frame.size.width = width.doubleValue; info.frame = frame;
++            [info setNeedsLayout]; [info layoutIfNeeded];
++            assert(fabs(CGRectGetMaxX(play.frame) - (width.doubleValue - 20)) < 1);
++            assert(CGRectGetMaxX(group.frame) + 15 <= CGRectGetMinX(play.frame));
++            assert(!CGRectIntersectsRect(download.frame, save.frame));
++            if (width.intValue == 320) assert(group.scrollEnabled);
++        }
++        info.frame = original; [info setNeedsLayout]; [info layoutIfNeeded];
++        UIControl *source = (id)download.source;
++        __block NSUInteger fired = 0;
++        [source addAction:[UIAction actionWithHandler:^(UIAction *action) { fired++; }]
++            forControlEvents:UIControlEventTouchUpInside];
++        [download sendActionsForControlEvents:UIControlEventTouchUpInside];
++        assert(fired == 1);
++    } else {
++        assert(!group && fabs(CGRectGetMidX(play.frame) - info.bounds.size.width / 2) < 1);
++    }
++    NSDictionary *result = @{@"passed": @YES, @"independent_actions": @(independent), @"native_action_and_layout_verified": @YES};
++    NSString *path = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
++        stringByAppendingPathComponent:@"playlist-actions-verification.json"];
++    [[NSJSONSerialization dataWithJSONObject:result options:NSJSONWritingPrettyPrinted error:nil]
++        writeToFile:path atomically:YES];
++    NSLog(@"[harness] PASS %@ action row", independent ? @"independent" : @"centered");
++}
+ 
+ #pragma mark - Spotify's classes, by name
+ 
+@@ -692,7 +738,8 @@ static void buildLikedSongs(UIViewController *page, CGFloat W) {
+     }
+     // Drawn by Lottie, its state in its identifier and in the Encore object behind it (issue #65).
+     UIView *downloadAction = box(actions, UIView.class, CGRectMake(106, 0, 48, 48), nil);
+-    mockDownloadButton(box(downloadAction, UIView.class, downloadAction.bounds, nil));
++    if (![NSProcessInfo.processInfo.arguments containsObject:@"no-download"])
++        mockDownloadButton(box(downloadAction, UIView.class, downloadAction.bounds, nil));
+     actionButton(actions, CGRectMake(154, 2, 44, 44), @"Components.UI.ContextMenuButton", @"More options");
+ 
+     UIView *mixShuffle = box(container, UIView.class, CGRectMake(container.bounds.size.width - 124, 0, 124, 48), nil);
+@@ -934,6 +981,12 @@ static void buildLikedSongs(UIViewController *page, CGFloat W) {
+               gradient.hidden, gradient.layer.mask != nil, playButton.hidden, playButton.layer.mask != nil,
+               cover.hidden, cover.layer.mask != nil);
+     });
++    if ([NSProcessInfo.processInfo.arguments containsObject:@"verify-actions"])
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
++            BOOL independent = (mix || [NSProcessInfo.processInfo.arguments containsObject:@"other"]) &&
++                ![NSProcessInfo.processInfo.arguments containsObject:@"no-download"];
++            verifyMixActions(page.view, independent);
++        });
+     return YES;
+ }
+ 
 diff --git a/scripts/extract-flags.py b/scripts/extract-flags.py
 index 4563ba0..c689293 100755
 --- a/scripts/extract-flags.py
@@ -107,14 +200,14 @@ index 4b48da5..1bcf457 100644
      if (play) conceal(wrapperFor(play, page));
      if (shuffle) conceal(wrapperFor(shuffle, page));
 diff --git a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
-index 0aa02f5..9c450c3 100644
+index 0aa02f5..f25a087 100644
 --- a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
 +++ b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
 @@ -44,6 +44,10 @@ extern const CGFloat SGRHeaderInfoTitleRise;  // 56, of the content over the pic
  // has no image to copy. `playColor` is the color of the capsule's glyph and word.
  - (void)showShuffle:(UIView *)shuffle play:(UIView *)play trailing:(UIView *)trailing
     trailingFallback:(UIImage *)trailingFallback playColor:(UIColor *)playColor;
-+// Album-only row: Play at the trailing edge, the independent shuffle, download
++// Album and playlist row: Play at the trailing edge, the independent shuffle, download
 +// and add controls at the leading edge. Narrow widths scroll only that group.
 +- (void)showAlbumShuffle:(UIView *)shuffle play:(UIView *)play download:(UIView *)download
 +                    add:(UIView *)add playColor:(UIColor *)playColor;
@@ -207,3 +300,66 @@ index b62b752..7258401 100644
  
      if (!_about.hidden) {
          y += kAboutAbove;
+diff --git a/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x b/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
+index cd698f9..5c12d9a 100644
+--- a/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
++++ b/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
+@@ -43,6 +43,7 @@ static const CGFloat kMinHero = 120, kMinCover = 80;
+ static char kCoverKey, kMetaKey, kPlayKey, kLayoutKey, kToolbarKey, kScrimKey, kBarScrimKey;
+ static char kShuffleKey, kAddKey, kDownloadKey, kInfoKey, kBlockHeightKey, kBlockWatchedKey;
+ static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey;
++static char kIndependentActionsKey;
+ 
+ #pragma mark - finding things
+ 
+@@ -310,23 +311,9 @@ static NSString *lengthIn(UIView *block) {
+     return firstText(SGRFindByIdentifier(block, @"Components.Header.UI.Metadata", &kMetaKey), nil);
+ }
+ 
+-// Someone else's playlist shows save until it is in the library, and then download in its place, as the
+-// Music app turns add into download once a playlist is added; taking it out of the library again is
+-// Spotify's own Remove from Your Library in the ⋯ menu. Download only where Spotify has put its own
+-// download button in the row and left it enabled, so an account that cannot download keeps save (and its
+-// checkmark) and nothing is offered that Spotify does not offer: the button fires Spotify's. A playlist
+-// already downloading or downloaded shows download whatever save says.
+-static BOOL showsDownload(UIView *save, UIView *download) {
+-    if (![download isKindOfClass:UIControl.class] || !((UIControl *)download).enabled) return NO;
+-    BOOL added = NO;
+-    SGRDownloadState state = SGRDownloadNone;
+-    return (SGRReadAddTo(save, &added) && added) || (SGRReadDownload(download, &state, NULL) && state != SGRDownloadNone);
+-}
+-
+ // What the playlist's header shows: the name and the description from the page's model, the creator and the
+-// length from Spotify's concealed labels, and on Play's right save for someone else's playlist (download once
+-// it is saved, showsDownload), download for one's own and for Liked Songs, which Spotify reports as neither
+-// owned nor unsaved (isOwnedBySelf NO, formatListType liked-songs).
++// length from Spotify's concealed labels. Save and download each keep their own button when both exist.
++// One's own playlists and Liked Songs keep their existing row with download alone.
+ static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id model) {
+     NSString *title = modelString(model, @"playlistName") ?: firstText(block, nil);
+     [info showTitle:title creator:creatorIn(block) length:lengthIn(block)
+@@ -338,10 +325,20 @@ static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id mo
+     UIView *play = SGRFindByIdentifier(root, @"header-play-button", &kPlayKey);
+     UIView *save = own ? nil : SGRFindByIdentifier(block, @"Components.UI.AddToButton", &kAddKey);
+     UIView *download = SGRFindByIdentifier(block, @"DownloadButton.Granular*", &kDownloadKey);
+-    if (save && showsDownload(save, download)) save = nil;
+-    if (save) download = nil;
+-    [info showShuffle:shuffle play:play trailing:save ?: download
+-     trailingFallback:[UIImage systemImageNamed:save ? @"plus" : @"arrow.down"] playColor:SGRPlaylistFieldColor(info)];
++    // The title and cover do not determine which actions a playlist supports. Whenever Spotify
++    // supplies both save and download, give each its own glass button. Keep that row's layout
++    // through transient model updates; a missing source hides only its own button.
++    BOOL independent = [objc_getAssociatedObject(info, &kIndependentActionsKey) boolValue];
++    if (!independent && save && download) {
++        independent = YES;
++        objc_setAssociatedObject(info, &kIndependentActionsKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++    }
++    if (independent) {
++        [info showAlbumShuffle:shuffle play:play download:download add:save playColor:SGRPlaylistFieldColor(info)];
++    } else {
++        [info showShuffle:shuffle play:play trailing:save ?: download
++         trailingFallback:[UIImage systemImageNamed:save ? @"plus" : @"arrow.down"] playColor:SGRPlaylistFieldColor(info)];
++    }
+     // Only what the button draws goes: a concealed layer still sends the actions the capsule fires.
+     conceal(play);
+ 

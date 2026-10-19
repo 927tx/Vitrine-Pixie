@@ -13,7 +13,7 @@ git -C vitrine apply --check ../patches/vitrine-pixie.patch
 git -C vitrine apply ../patches/vitrine-pixie.patch
 ```
 
-The patch includes the redesigned album row, its simulator fixture and two local build fixes. Original project files and notices remain upstream.
+The patch includes the redesigned album row, playlist/mix headers with independent Add and Download controls, their simulator fixtures and local build fixes. Original project files and notices remain upstream.
 
 ## 2. Build the updated glass controls
 
@@ -41,6 +41,6 @@ The builder compiles the companion library, validates guarded native patches, re
 
 ## Tests and scope
 
-`NativeDownloads/tests/` contains the component fixtures used during development. The redesigned album fixture is included in the upstream patch (`harness/album/`, with `verify-actions` mode). Fixtures alone do not prove device downloading or offline playback.
+`NativeDownloads/tests/` contains the component fixtures used during development. The redesigned album and playlist fixtures are included in the upstream patch (`harness/album/` and `harness/playlist/`, with `verify-actions` mode). Fixtures alone do not prove device downloading or offline playback.
 
 Release builds set `SAP_ENABLE_WAV_CAPTURE=0`. Encoded audio cache/export code remains a disabled research prototype; it is not a supported export feature. No account credentials, device logs, signing material or Spotify executable are included.

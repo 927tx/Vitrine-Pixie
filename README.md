@@ -16,10 +16,12 @@ Build announcements and available installation files are posted in the channel. 
 - Download the album of the currently playing track from the manager.
 - **Vitrine settings → Pixie Download Manager**: current-track actions, download status, optional diagnostics and journal/report export.
 - English and Russian interface, following the selected app language.
-- Redesigned album controls: Play on the right, glass download and other controls on the left, horizontal scrolling when needed.
+- Redesigned album controls, plus playlist and mix headers where Spotify supplies both Add and Download: Play on the right, separate glass controls on the left, horizontal scrolling when needed.
 - Diagnostics can be switched off. WAV capture is disabled in release builds.
 
 Music stays in **Spotify's offline storage**, for playback inside Spotify. Exporting ordinary MP3/M4A/OGG audio files is not implemented.
+
+See [CHANGELOG.md](CHANGELOG.md) for source updates.
 
 ## Compatibility
 

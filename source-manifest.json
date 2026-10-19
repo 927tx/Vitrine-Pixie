@@ -4,7 +4,8 @@
   "upstream_commit": "914343731f66ccb2e639b8164a36be849a043276",
   "files": {
     ".gitignore": "2d61bd281f184c6d42afa86da2c91002581307c6c3dcb4f57f4e0602e6af357a",
-    "BUILD.md": "77dd9618cd2e74b3e7a0c6b3b688b727e4a2520a5b0ed76fb1b2dd9482b6fbd9",
+    "BUILD.md": "b45717f47b84c8cf88cd9b3b5af907be967f13db3cc6fa08a34f19ef5355a49d",
+    "CHANGELOG.md": "aa3099e346e7e48c9dace6bb3bc12441ba1ae3c05668b1eae5c871f9d161dad3",
     "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
     "NativeDownloads/src/AVAudioHooks.m": "626d7122b014feae1bb584104e962b2e9140b03a191645a8a8f9ef3cd4d24f51",
     "NativeDownloads/src/AlbumMetadata.h": "a0ac2c9d906edf8761662969d4564b269d99ebdc21bdc848b0ef2862a4766e7a",
@@ -68,7 +69,7 @@
     "NativeDownloads/tools/patch_imports.py": "59d87e762e3befdb9baa75f0ff1cf895aa709bbf9e7cde036927a0dc20435350",
     "NativeDownloads/tools/patch_key_request_mode.py": "ac0f2b84286798a58dec19496bc508822388ced1671f3a044633d2f65cc05b58",
     "NativeDownloads/tools/patch_native_restrictions.py": "e95c6e1d4362415f22c204b57c5b5c3595b71814a620ee4250f1c4f6fb723f02",
-    "README.md": "c451c62b6de746ad9f551a20aad070a9e02aa1cfd4b2026e4a2fe05ae01553f4",
-    "patches/vitrine-pixie.patch": "e196a04d2b7c083b16f9b2ebb55e6d61b9329f5b3d210cb0060094d3b258dde8"
+    "README.md": "864a32d884fc7b29d7023107f9a844fbf35953cb48c143e1d034a32dfc558fb6",
+    "patches/vitrine-pixie.patch": "ac19dd7f4fb0684fc7a4d624d169460bfe35754dd079f2d5a84e4f1b922fae1f"
   }
 }
