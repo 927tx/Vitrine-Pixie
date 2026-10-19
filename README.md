@@ -6,9 +6,9 @@ Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https:/
 
 ## Downloads and updates
 
-**[Telegram — @glongqforks](https://t.me/glongqforks)**
+**[Download Spotify 9.1.90 + Pixie Manager — Telegram post](https://t.me/glongqforks/5)**
 
-Build announcements and available installation files are posted in the channel. This repository contains source code and patches; no IPA files are hosted here. GitHub's “Source code” archives are not installable apps.
+Download the IPA from the linked post. Updates and release announcements: [@glongqforks](https://t.me/glongqforks). This repository contains source code and patches; no IPA files are hosted here. GitHub's “Source code” archives are not installable apps.
 
 ## Pixie
 

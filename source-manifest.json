@@ -69,7 +69,7 @@
     "NativeDownloads/tools/patch_imports.py": "59d87e762e3befdb9baa75f0ff1cf895aa709bbf9e7cde036927a0dc20435350",
     "NativeDownloads/tools/patch_key_request_mode.py": "ac0f2b84286798a58dec19496bc508822388ced1671f3a044633d2f65cc05b58",
     "NativeDownloads/tools/patch_native_restrictions.py": "e95c6e1d4362415f22c204b57c5b5c3595b71814a620ee4250f1c4f6fb723f02",
-    "README.md": "864a32d884fc7b29d7023107f9a844fbf35953cb48c143e1d034a32dfc558fb6",
+    "README.md": "731a13aa02486edf012b5c041050c201bbf77d720e472575c0031e9d03deaa37",
     "patches/vitrine-pixie.patch": "ac19dd7f4fb0684fc7a4d624d169460bfe35754dd079f2d5a84e4f1b922fae1f"
   }
 }
