@@ -1,6 +1,6 @@
 #pragma once
 #import <Foundation/Foundation.h>
 
-// Follows the app's preferred language (including the iOS per-app language).
-// Evaluated once per process, never from the real-time audio callback.
+// Pixie's interface is English-only, regardless of Spotify's preferred language.
+// Keep the paired-string API compatible with existing callers.
 NSString *SAPL(NSString *russian,NSString *english);

@@ -1,6 +1,6 @@
 # Vitrine + Pixie Download Manager
 
-Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https://github.com/My-Name-Is-Jeff/vitrine), with native offline downloads and an English/Russian download manager.
+Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https://github.com/My-Name-Is-Jeff/vitrine), with native offline downloads and a download manager.
 
 **Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
 
@@ -10,12 +10,14 @@ Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https:/
 
 Download the IPA from the linked post. Updates and release announcements: [@glongqforks](https://t.me/glongqforks). This repository contains source code and patches; no IPA files are hosted here. GitHub's “Source code” archives are not installable apps.
 
+**Jailbreak packages:** [rootless / rootful DEBs](https://github.com/Glongq/Vitrine-Pixie/releases/tag/pixie-9.1.90-jailbreak-1). The jailbreak build has **not been tested on a jailbroken device**; the regular IPA has been tested through LiveContainer and SideStore.
+
 ## Pixie
 
 - Native offline downloads for tracks, albums and playlists.
 - Download the album of the currently playing track from the manager.
 - **Vitrine settings → Pixie Download Manager**: current-track actions, download status, optional diagnostics and journal/report export.
-- English and Russian interface, following the selected app language.
+- English interface.
 - Redesigned album controls, plus playlist and mix headers where Spotify supplies both Add and Download: Play on the right, separate glass controls on the left, horizontal scrolling when needed.
 - Diagnostics can be switched off. WAV capture is disabled in release builds.
 
@@ -28,6 +30,10 @@ See [CHANGELOG.md](CHANGELOG.md) for source updates.
 The Pixie extension targets Spotify **9.1.90**, ARM64 UUID `fbce22c17e1b3e0d9be866ff9291943e`, with Vitrine **1.0.0-beta.13** as the base. The builder checks the executable UUID and instruction bytes. Other Spotify binaries require a separate port.
 
 Native downloads and album controls were checked on an iPhone 15 Pro Max, iOS 27.0.1, using LiveContainer. Vitrine's Liquid Glass redesign requires iOS 26 or later. Long-term offline licence renewal has not been verified.
+
+## Latest update
+
+Fixed a local-file artwork crash caused by malformed metadata URLs. Added jailbreak packaging and its sources. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Source and build
 

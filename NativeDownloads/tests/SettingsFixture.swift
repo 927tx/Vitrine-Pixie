@@ -104,8 +104,7 @@ class ChromeHost:UIViewController {
      self.capture("downloads-top")
      guard let page=nav.topViewController as? UITableViewController else{return}
      precondition(page.tableView.numberOfSections==3)
-     let english=ProcessInfo.processInfo.arguments.contains("(en)")
-     precondition(page.title==(english ? "Pixie Download Manager" : "Менеджер загрузок Pixie"),"wrong app language")
+     precondition(page.title=="Pixie Download Manager","Pixie must remain in English")
      for section in 0..<3 {for row in 0..<page.tableView.numberOfRows(inSection:section) {
       let cell=page.tableView.dataSource!.tableView(page.tableView,cellForRowAt:IndexPath(row:row,section:section))
       if let content=cell.contentConfiguration as? UIListContentConfiguration {

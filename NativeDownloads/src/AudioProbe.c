@@ -77,6 +77,28 @@ static bool ready(void) {
     return atomic_load_explicit(&backendReady, memory_order_acquire);
 }
 
+#if SAP_JAILBREAK
+// Rebind before Vitrine's constructor, matching the IPA's import chain. Preserve
+// any previous import hook as our backend rather than bypassing another tweak.
+extern bool SAPJBRebindImport(const char *,void *,void **);
+bool SAPInstallJailbreakAudioImports(void) {
+    if(!ready())return false;
+    bool complete=true;
+#define SAP_BIND(name,member) do { \
+    void *held=NULL; \
+    if(!SAPJBRebindImport(#name,(void *)name,&held)||!held||held==(void *)name)complete=false; \
+    else api.member=(__typeof__(api.member))held; \
+} while(0)
+    SAP_BIND(AudioUnitSetProperty,set);
+    SAP_BIND(AudioUnitGetProperty,get);
+    SAP_BIND(AudioOutputUnitStart,start);
+    SAP_BIND(AudioOutputUnitStop,stop);
+    SAP_BIND(AudioComponentInstanceDispose,dispose);
+#undef SAP_BIND
+    return complete;
+}
+#endif
+
 // Caller holds setupLock. A newly published format is immutable forever.
 static void updateFormat(SAPContext *context) {
     AudioStreamBasicDescription format = {0};

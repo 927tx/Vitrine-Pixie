@@ -73,6 +73,37 @@ index b5eb9c3..7a1dc2e 100644
      return YES;
  }
  
+diff --git a/harness/local-files/README.md b/harness/local-files/README.md
+index 9a1a18a..07d5bab 100644
+--- a/harness/local-files/README.md
++++ b/harness/local-files/README.md
+@@ -19,6 +19,13 @@ a rename's key and gone with a delete, and the match by title and artist, folded
+ It does not cover the hooks in `LocalFileInfo.x`, the lyrics engine asking for the new key
+ (`Shared/Lyrics/KaraokeSource.x`) or the Imported LRC files page.
+ 
++`cover.m` also exercises the real fallback-cover resolver against a stand-in for Spotify 9.1.90's
++unchecked `spt_localFileImagePath`. Before the fix, a one-part metadata URL reproduces the recorded
++`NSRangeException` (index 2 in an array of one). It checks malformed and unrelated URLs, valid absolute
++paths/file URLs/escaped local-image URIs, the next metadata field, Now Playing fallback and an edited
++cover taking precedence. The resolver must never call the unchecked parser. These are resolver tests,
++not a full Spotify playback test on an iPhone.
++
+ ## Edit info in the simulator
+ 
+ `sim/build-sim.sh <udid>` builds `EditInfoMenu.x` and `LocalFiles.m` as the tweak compiles them into an
+diff --git a/harness/local-files/build.sh b/harness/local-files/build.sh
+index 9e80d32..65dcb9c 100755
+--- a/harness/local-files/build.sh
++++ b/harness/local-files/build.sh
+@@ -16,3 +16,8 @@ xcrun -sdk macosx clang -target arm64-apple-ios17.0-macabi -isysroot "$SDK" -ifr
+     "$SRC/Shared/Lyrics/KaraokeTiming.m" "$SRC/Shared/AdBlock/Protobuf.m" \
+     -framework UIKit -framework CoreGraphics -framework Foundation -o "$HERE/build/lrc"
+ CFFIXED_USER_HOME="$HERE/build/home" "$HERE/build/lrc"
++# Cover fallback, including the malformed image URI that crashed Spotify 9.1.90.
++xcrun -sdk macosx clang -target arm64-apple-ios17.0-macabi -isysroot "$SDK" -iframework "$SDK/System/iOSSupport/System/Library/Frameworks" \
++    -fobjc-arc -g -Wall -Werror -I"$SRC" "$HERE/cover.m" "$SRC/Shared/LocalFiles/LocalCover.m" "$SRC/Shared/LocalFiles/LocalFiles.m" \
++    -framework UIKit -framework MediaPlayer -framework CoreGraphics -framework Foundation -o "$HERE/build/cover"
++CFFIXED_USER_HOME="$HERE/build/home" "$HERE/build/cover"
 diff --git a/harness/playlist/build.sh b/harness/playlist/build.sh
 index 94411c6..3175289 100755
 --- a/harness/playlist/build.sh
@@ -363,3 +394,147 @@ index cd698f9..5c12d9a 100644
      // Only what the button draws goes: a concealed layer still sends the actions the capsule fires.
      conceal(play);
  
+diff --git a/tweak/Sources/Shared/LocalFiles/LocalCover.m b/tweak/Sources/Shared/LocalFiles/LocalCover.m
+index 19130ed..1e6c5a9 100644
+--- a/tweak/Sources/Shared/LocalFiles/LocalCover.m
++++ b/tweak/Sources/Shared/LocalFiles/LocalCover.m
+@@ -6,7 +6,6 @@
+ // Threading: main thread. A picture found is kept per track; a miss is tried again after a second, since
+ // the now playing info may not have caught up with the track yet.
+ #import <MediaPlayer/MediaPlayer.h>
+-#import <objc/message.h>
+ #import "Core/SGCore.h"
+ #import "Headers/SPTPlayer.h"
+ #import "Shared/Player/PlayerState.h"
+@@ -19,18 +18,21 @@ static const CGFloat kSide = 1200;
+ static NSMutableDictionary<NSString *, UIImage *> *sg_found;
+ static NSMutableDictionary<NSString *, NSDate *> *sg_missed;
+ 
+-// A file URL, an absolute path, or Spotify's own reading of a value (-[NSURL spt_localFileImagePath],
+-// asked only when the object answers it as a getter of an object).
++// Only local paths and Spotify's local-image URI carry a file to read. In 9.1.90,
++// spt_localFileImagePath blindly indexes spotifyURIComponents[2]; NSURL answering
++// that selector does not make an arbitrary metadata URL safe to pass to it.
++// Decode the known URI here, without entering that unchecked Spotify parser.
+ static NSString *pathIn(id value) {
+     if ([value isKindOfClass:NSString.class] && [value hasPrefix:@"/"]) return value;
+     NSURL *url = [value isKindOfClass:NSURL.class] ? value : [value isKindOfClass:NSString.class] ? [NSURL URLWithString:value] : nil;
+     if (url.isFileURL) return url.path;
+-    SEL getter = NSSelectorFromString(@"spt_localFileImagePath");
+-    if (![url respondsToSelector:getter]) return nil;
+-    NSMethodSignature *signature = [url methodSignatureForSelector:getter];
+-    if (signature.numberOfArguments != 2 || signature.methodReturnType[0] != '@') return nil;
+-    id path = ((id (*)(id, SEL))objc_msgSend)(url, getter);
+-    return [path isKindOfClass:NSString.class] && [path length] ? path : nil;
++    NSString *prefix = @"spotify:localfileimage:", *address = url.absoluteString;
++    if (![address hasPrefix:prefix]) return nil;
++    NSString *encoded = [address substringFromIndex:prefix.length];
++    // The path is one URI component: any ':' belonging to it must be escaped.
++    if (!encoded.length || [encoded containsString:@":"]) return nil;
++    NSString *path = encoded.stringByRemovingPercentEncoding;
++    return [path hasPrefix:@"/"] ? path : nil;
+ }
+ 
+ static UIImage *fromMetadata(NSDictionary *metadata) {
+diff --git a/harness/local-files/cover.m b/harness/local-files/cover.m
+new file mode 100644
+index 0000000..73f088f
+--- /dev/null
++++ b/harness/local-files/cover.m
+@@ -0,0 +1,96 @@
++// Regression for Spotify 9.1.90's unchecked local-image URI parser. Exercise the
++// actual fallback resolver with unrelated URLs, malformed URIs and valid covers.
++#import <UIKit/UIKit.h>
++#import <MediaPlayer/MediaPlayer.h>
++#import <objc/runtime.h>
++#import "Headers/SPTPlayer.h"
++#import "Shared/LocalFiles/LocalFiles.h"
++
++#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAILED line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
++
++static NSUInteger legacyCalls, sequence;
++@interface NSURL (SGCrashFixture)
++- (NSString *)spt_localFileImagePath;
++@end
++@implementation NSURL (SGCrashFixture)
++- (NSString *)spt_localFileImagePath {
++    legacyCalls++;
++    NSArray *parts = [self.absoluteString componentsSeparatedByString:@":"];
++    return [parts[2] stringByRemovingPercentEncoding];
++}
++@end
++
++@interface SGTestLocalTrack : NSObject
++@property(nonatomic, strong) NSURL *URI;
++@property(nonatomic, copy) NSDictionary *metadata;
++@property(nonatomic, copy) NSString *trackTitle, *artistName;
++@end
++@implementation SGTestLocalTrack @end
++@interface SGTestNowPlaying : NSObject
++@property(nonatomic, copy) NSDictionary *nowPlayingInfo;
++@end
++@implementation SGTestNowPlaying @end
++
++NSString *SGURIString(id uri) {
++    return [uri isKindOfClass:NSURL.class] ? [uri absoluteString] : uri;
++}
++static SGTestLocalTrack *track(NSDictionary *metadata) {
++    SGTestLocalTrack *t = [SGTestLocalTrack new];
++    t.URI = [NSURL URLWithString:[NSString stringWithFormat:@"spotify:local:Fixture:Album:Track%lu:60", (unsigned long)++sequence]];
++    t.metadata = metadata; t.trackTitle = @"Cover fixture"; t.artistName = @"Fixture artist";
++    return t;
++}
++static UIImage *resolve(SGTestLocalTrack *t) {
++    return SGLocalFileFallbackCover((SPTPlayerTrack *)t);
++}
++int main(void) { @autoreleasepool {
++    [NSUserDefaults.standardUserDefaults removeObjectForKey:SGKeyLocalFileEdits];
++    SGTestNowPlaying *center = [SGTestNowPlaying new];
++    Method getter = class_getClassMethod(MPNowPlayingInfoCenter.class, @selector(defaultCenter));
++    IMP replacement = imp_implementationWithBlock(^id(id self) { return center; });
++    IMP original = method_setImplementation(getter, replacement);
++    @try {
++        for (id address in @[@"cover.jpg", @"https://example.invalid/cover.jpg",
++                [NSURL URLWithString:@"https://example.invalid/cover.jpg"],
++                @"spotify:image:abc", @"spotify:localfileimage", @"spotify:localfileimage:",
++                @"spotify:localfileimage:relative.jpg", @"spotify:localfileimage:/tmp/a:b.jpg",
++                @42, NSNull.null]) {
++            CHECK(!resolve(track(@{@"image_xlarge_url": address})));
++        }
++        UIImage *image = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(4, 4)]
++            imageWithActions:^(UIGraphicsImageRendererContext *context) {
++                [UIColor.redColor setFill]; UIRectFill(CGRectMake(0, 0, 4, 4));
++            }];
++        NSString *file = [NSTemporaryDirectory() stringByAppendingPathComponent:@"local cover: artwork.png"];
++        CHECK([UIImagePNGRepresentation(image) writeToFile:file atomically:YES]);
++        for (id address in @[file, [NSURL fileURLWithPath:file], SGLocalFileCoverURL(file),
++                [NSURL URLWithString:SGLocalFileCoverURL(file)], image]) {
++            CHECK(resolve(track(@{@"image_xlarge_url": address})).CGImage);
++        }
++        CHECK(resolve(track(@{@"image_xlarge_url": @"cover.jpg", @"image_small_url": file})).CGImage);
++        SGTestLocalTrack *fallback = track(@{@"image_url": @"cover.jpg"});
++        center.nowPlayingInfo = @{MPMediaItemPropertyTitle: fallback.trackTitle,
++            MPMediaItemPropertyArtist: fallback.artistName,
++            MPMediaItemPropertyArtwork: [[MPMediaItemArtwork alloc] initWithBoundsSize:image.size
++                requestHandler:^UIImage *(CGSize size) { return image; }]};
++        CHECK(resolve(fallback).CGImage);
++        center.nowPlayingInfo = nil;
++        SGTestLocalTrack *edited = track(@{@"image_url": @"cover.jpg"});
++        SGLocalFileSaveEdit(edited.URI.absoluteString, @{}, image, YES);
++        CHECK(!resolve(edited));
++        SGLocalFileSaveEdit(edited.URI.absoluteString, @{}, nil, NO);
++        SGTestLocalTrack *remote = track(@{@"image_url": @"cover.jpg"});
++        remote.URI = [NSURL URLWithString:@"spotify:track:4uLU6hMCjMI75M1A2tKUQC"];
++        CHECK(!resolve(remote));
++        CHECK(legacyCalls == 0);
++        [NSFileManager.defaultManager removeItemAtPath:file error:nil];
++        puts("PASS: local covers; malformed/unrelated URLs, paths, file URLs, escaped Spotify URIs, next-field/system fallback, edited covers; no unsafe Spotify parser calls");
++    } @catch (NSException *exception) {
++        fprintf(stderr, "FAIL: local cover resolver raised %s: %s\n", exception.name.UTF8String, exception.reason.UTF8String);
++        return 1;
++    } @finally {
++        method_setImplementation(getter, original);
++        imp_removeBlock(replacement);
++    }
++    return 0;
++} }

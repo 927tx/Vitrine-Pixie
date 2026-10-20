@@ -44,3 +44,22 @@ The builder compiles the companion library, validates guarded native patches, re
 `NativeDownloads/tests/` contains the component fixtures used during development. The redesigned album and playlist fixtures are included in the upstream patch (`harness/album/` and `harness/playlist/`, with `verify-actions` mode). Fixtures alone do not prove device downloading or offline playback.
 
 Release builds set `SAP_ENABLE_WAV_CAPTURE=0`. Encoded audio cache/export code remains a disabled research prototype; it is not a supported export feature. No account credentials, device logs, signing material or Spotify executable are included.
+
+## Jailbreak packages (rootless / rootful)
+
+These packages are for an original Spotify 9.1.90 installation on a jailbroken device. Install **one** package matching the jailbreak layout, then restart Spotify. Do not install on top of an IPA with Vitrine/Pixie already injected.
+
+After building the patched Vitrine library above, from this repository root:
+
+```sh
+ln -s vitrine vitrine-upstream
+python3 NativeDownloads/tools/build_debs.py /path/to/Vitrine-9.1.90.ipa \
+  --vitrine-dylib /tmp/pixie-spotifyglass.dylib \
+  --theos /path/to/theos
+```
+
+The source symlink supplies the expected Vitrine source path; Theos must include its Substrate development framework. The builder uses the supplied decrypted IPA only for executable validation and local patch-engine tests. It does not package Spotify itself, account data or the input IPA.
+
+Outputs: `NativeDownloads/outputs/pixie-9.1.90-deb/`, with rootless (`iphoneos-arm64`, `/var/jb`) and rootful (`iphoneos-arm`) DEBs. Both require a compatible Substrate hook provider. The package contains Vitrine and Pixie together; do not install a second Vitrine tweak alongside it.
+
+**Device status:** the regular IPA has been tested via LiveContainer and SideStore. Jailbreak execution is **not tested**. Local package checks and the 12-case patch-engine fixture are not a substitute for a jailbroken-device test. The IPA-only Live Activity / App Intents extension is not included in the DEB.

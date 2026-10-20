@@ -368,6 +368,10 @@ static NSDictionary *SAPCompleteDiagnosticSnapshot(NSDictionary *native) {
 
 __attribute__((constructor)) static void SAPLoad(void) {
     @autoreleasepool {
+#if SAP_JAILBREAK
+        extern bool SAPInstallJailbreakSupport(void);
+        if(!SAPInstallJailbreakSupport())return;
+#endif
         SAPDiagnosticsInitialize();
         SpotifyAudioProbeInitialize();
         SAPInstallAVHooks();
