@@ -1,14 +1,22 @@
 #import "Localization.h"
 #import "NativeOffline.h"
 #import "NativeRestrictionsPatch.h"
+#import "NativeKeyModePatch.h"
 #import "OfflineLimits.h"
 #import "TrackJournal.h"
 #import "Diagnostics.h"
+#import "DownloadCompatibility.h"
+#import "TrackDownload.h"
+#import "Deadline.h"
+#import "KeyModePolicy.h"
+#import "DiagnosticTrace.h"
+#import "NativeTracePatch.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach/mach.h>
 #import <mach-o/loader.h>
+#import <mach-o/dyld.h>
 #import <dlfcn.h>
 #import <os/lock.h>
 #include <stdatomic.h>
@@ -28,11 +36,27 @@ static NSDictionary *snapshot;
 static const uint8_t supportedUUID[]={0xfb,0xce,0x22,0xc1,0x7e,0x1b,0x3e,0x0d,0x9b,0xe8,0x66,0xff,0x92,0x91,0x94,0x3e};
 static const uint8_t setterCode[]={0xe6,0x03,0x1e,0xaa,0x8f,0x3e,0xf4,0x95,0xfe,0x03,0x06,0xaa,0xfd,0x7b,0x11,0xa9};
 static const uintptr_t setterOffset=0x1d1debc;
+static atomic_int requestedKeyMode=ATOMIC_VAR_INIT(0);
+static atomic_int lastSelectorMode=ATOMIC_VAR_INIT(-1);
+static atomic_uint_fast64_t selectorReads[2];
+static NSString *const keyModePreference=@"PixieOfflineKeyRequestMode";
+static int configuredKeyMode(void) {return atomic_load_explicit(&requestedKeyMode,memory_order_relaxed);}
+
+// Called by the pre-installed, verified Spotify call-site trampoline. Its hot
+// path only updates atomic counters. Reports read configuredKeyMode directly,
+// so opening settings never manufactures a selector invocation.
+__attribute__((visibility("default"))) int SAPCurrentKeyRequestMode(void) {
+    int mode=configuredKeyMode();
+    atomic_fetch_add_explicit(&selectorReads[mode==1?1:0],1,memory_order_relaxed);
+    atomic_store_explicit(&lastSelectorMode,mode,memory_order_relaxed);
+    return mode;
+}
 
 @interface SAPNativePreparation : NSObject {
     atomic_bool _finished;
 }
 @property(nonatomic,copy) void (^completion)(BOOL,NSString *);
+@property(nonatomic) SAPTraceID traceOperation;
 - (BOOL)finished;
 - (void)finish:(BOOL)ready reason:(NSString *)reason report:(NSDictionary *)report;
 @end
@@ -42,11 +66,16 @@ static const uintptr_t setterOffset=0x1d1debc;
 - (void)finish:(BOOL)ready reason:(NSString *)reason report:(NSDictionary *)report {
     bool wasFinished=false;
     if(!atomic_compare_exchange_strong(&_finished,&wasFinished,true))return;
+    SAP_TRACE("native_setup","completed",self.traceOperation,@{@"local_prepared":@(ready),@"authorization_checked":@NO,@"reason":reason?:@"",
+        @"before":report[@"before"]?:@{},@"after":report[@"after"]?:@{},@"changed":report[@"changed"]?:@NO});
     NSMutableDictionary *value=[report mutableCopy]?:[NSMutableDictionary dictionary];
-    value[@"ready"]=@(ready);value[@"reason"]=reason?:@"";
+    value[@"local_prepared"]=@(ready);value[@"authorization_checked"]=@NO;value[@"reason"]=reason?:@"";
     NSMutableDictionary *quota=[(value[@"after"]?:value[@"before"]) mutableCopy]?:[NSMutableDictionary dictionary];
-    quota[@"ready"]=@(ready);quota[@"reason"]=reason?:@"";quota[@"changed"]=value[@"changed"]?:@NO;
+    quota[@"local_prepared"]=@(ready);quota[@"authorization_checked"]=@NO;quota[@"reason"]=reason?:@"";quota[@"changed"]=value[@"changed"]?:@NO;
     SAPJournalNoteQuota(quota);
+    SAPJournalNoteAction(@"native_setup_result",@{@"local_prepared":@(ready),@"authorization_checked":@NO,@"reason":reason?:@"",
+        @"before":value[@"before"]?:@{},@"after":value[@"after"]?:@{},
+        @"quota_values_changed":value[@"changed"]?:@NO});
     os_unfair_lock_lock(&stateLock);snapshot=[value copy];os_unfair_lock_unlock(&stateLock);
     dispatch_async(dispatch_get_main_queue(),^{
         void (^callback)(BOOL,NSString *)=self.completion;self.completion=nil;
@@ -73,6 +102,95 @@ static BOOL supportedImage(uintptr_t image) {
         cursor+=command.cmdsize;
     }
     return NO;
+}
+// 2 means the signed runtime selector is installed; 0/1 are older fixed
+// binaries. -1 means these executable bytes are unknown and must not be used.
+static int keyModeKind(uintptr_t image) {
+    uint32_t instruction=0;
+    if(!image || !readMemory(image+0x3594f60,&instruction,sizeof(instruction)))return -1;
+    if(instruction==UINT32_C(0x52800002))return 0;
+    if(instruction==UINT32_C(0x52800022))return 1;
+    if(!memcmp(&instruction,SAPTraceRequestHead,sizeof(SAPTraceRequestHead))) {
+        uint8_t trace[sizeof(SAPTraceRequestCode)];
+        if(readMemory(image+SAPTraceRequestCaveOffset,trace,sizeof(trace))&&!memcmp(trace,SAPTraceRequestCode,sizeof(trace)))return 0;
+        return -1;
+    }
+    if(memcmp(&instruction,SAPKeyModeCallerHead,sizeof(SAPKeyModeCallerHead)))return -1;
+    uint8_t code[sizeof(SAPKeyModeTrampoline)];
+    if(!readMemory(image+SAPKeyModeCaveOffset,code,sizeof(code)) ||
+       memcmp(code,SAPKeyModeTrampoline,sizeof(code)))return -1;
+    return 2;
+}
+static int installedKeyModeKind(void) {
+    uint32_t count=_dyld_image_count();
+    for(uint32_t i=0;i<count;i++) {
+        const char *path=_dyld_get_image_name(i);
+        if(!path || strcmp(strrchr(path,'/')?strrchr(path,'/')+1:path,"Spotify"))continue;
+        uintptr_t image=(uintptr_t)_dyld_get_image_header(i);
+        if(supportedImage(image))return keyModeKind(image);
+    }
+    return -1;
+}
+NSDictionary *SAPKeyRequestModeReport(void) {
+    SAPInstallNativeOffline();
+    int kind=installedKeyModeKind();
+    BOOL tracedFixedZero=NO;
+    for(unsigned i=0;i<_dyld_image_count();i++){
+        const char *p=_dyld_get_image_name(i);if(!p||strcmp(strrchr(p,'/')?strrchr(p,'/')+1:p,"Spotify"))continue;
+        uintptr_t image=(uintptr_t)_dyld_get_image_header(i);uint32_t word=0;
+        if(kind==0&&supportedImage(image)&&readMemory(image+SAPTraceRequestOffset,&word,sizeof(word)))tracedFixedZero=!memcmp(&word,SAPTraceRequestHead,sizeof(SAPTraceRequestHead));
+    }
+    void *resolved=dlsym(RTLD_DEFAULT,"SAPCurrentKeyRequestMode");
+    BOOL symbolMatches=resolved==(void *)&SAPCurrentKeyRequestMode;
+    Dl_info resolvedInfo={0};if(resolved)dladdr(resolved,&resolvedInfo);
+    int configured=kind==2?configuredKeyMode():kind;
+    int last=atomic_load_explicit(&lastSelectorMode,memory_order_relaxed);
+    uint64_t readsOne=atomic_load_explicit(&selectorReads[1],memory_order_relaxed);
+    BOOL confirmedOne=SAPModeOneConfirmed(kind,symbolMatches,configured,last,readsOne);
+    BOOL restoreZero=SAPCanRestoreZero(kind,symbolMatches,configured,last,readsOne);
+    return @{@"selected_mode":@(configured),@"configured_mode":@(configured),
+             @"last_selector_returned_mode":@(atomic_load_explicit(&lastSelectorMode,memory_order_relaxed)),
+             @"selector_reads_mode_0":@(atomic_load_explicit(&selectorReads[0],memory_order_relaxed)),
+             @"selector_reads_mode_1":@(atomic_load_explicit(&selectorReads[1],memory_order_relaxed)),
+             @"provider_argument_observed":@NO,@"authorization_confirmed":@NO,
+             @"runtime_selector_installed":@(kind==2),@"selector_symbol_matches_this_image":@(symbolMatches),
+             @"configuration_source":tracedFixedZero?@"verified_static_trace_argument":kind==0||kind==1?@"verified_direct_instruction":kind==2?@"runtime_selector":@"unverified",
+             @"selector_resolved_image":resolvedInfo.dli_fname?[NSString stringWithUTF8String:resolvedInfo.dli_fname]:@"unresolved",
+             @"mode_one_selection_allowed":@NO,@"mode_one_confirmed":@(confirmedOne),
+             @"mode_one_confirmation_source":kind==1?@"verified_direct_instruction":confirmedOne?@"verified_selector_returned_one":@"not_confirmed",
+             @"restore_zero_supported":@(restoreZero),@"runtime_selection_supported":@(restoreZero),
+             @"restart_required":@NO,
+             @"compatibility_check":SAPDownloadCompatibilityReport(),
+             @"detail":restoreZero?@"The verified selector returned 1. Restoring mode 0 is available. Download authorization is separate.":
+                 (kind==0?@"Mode 0 is verified in the executable. This status does not confirm download authorization.":kind==1?@"Mode 1 is verified in this executable. Install the mode-0 version to change it; runtime changes are unavailable.":kind==2&&symbolMatches?@"Only restoring a confirmed mode 1 to mode 0 is allowed. A saved preference alone is not confirmation.":@"The installed request mode cannot be verified. Changes are disabled.")};
+}
+void SAPSetKeyRequestMode(NSInteger mode,void (^completion)(BOOL,NSString *)) {
+    if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(),^{SAPSetKeyRequestMode(mode,completion);});return;}
+    if(mode!=0) {
+        SAPJournalNoteAction(@"key_mode_change_rejected",@{@"requested_mode":@(mode),@"reason":@"only_restoring_zero_is_allowed"});
+        if(completion)completion(NO,@"Only restoring a confirmed mode 1 to mode 0 is allowed.");return;
+    }
+    int kind=installedKeyModeKind();
+    BOOL matches=dlsym(RTLD_DEFAULT,"SAPCurrentKeyRequestMode")== (void *)&SAPCurrentKeyRequestMode;
+    if(!SAPCanRestoreZero(kind,matches,configuredKeyMode(),atomic_load(&lastSelectorMode),atomic_load(&selectorReads[1]))) {
+        SAPJournalNoteAction(@"key_mode_change_rejected",@{@"requested_mode":@(mode),@"installed_kind":@(kind),@"reason":@"no_confirmed_restorable_mode_one"});
+        if(completion)completion(NO,@"A verified executing mode-1 selector was not confirmed. No change was made.");return;
+    }
+    SAPJournalNoteAction(@"key_mode_change_requested",@{@"requested_mode":@(mode),@"configured_mode":@(configuredKeyMode())});
+    SAPRefreshDownloadCompatibility(^(NSDictionary *check){
+        NSString *blocked=SAPModeChangeBlockReason(check);
+        BOOL matches=dlsym(RTLD_DEFAULT,"SAPCurrentKeyRequestMode")== (void *)&SAPCurrentKeyRequestMode;
+        if(blocked || !SAPCanRestoreZero(installedKeyModeKind(),matches,configuredKeyMode(),atomic_load(&lastSelectorMode),atomic_load(&selectorReads[1]))) {
+            NSString *reason=blocked?:@"The installed selector changed during the check.";
+            SAPJournalNoteAction(@"key_mode_change_rejected",@{@"requested_mode":@(mode),@"check_id":check[@"id"]?:@"",@"reason":reason,@"configured_mode":@(configuredKeyMode())});
+            if(completion)completion(NO,reason);return;
+        }
+        int previous=atomic_exchange_explicit(&requestedKeyMode,0,memory_order_relaxed);
+        [NSUserDefaults.standardUserDefaults setInteger:0 forKey:keyModePreference];
+        SAPJournalNoteAction(@"key_mode_configuration_changed",@{@"previous_configured_mode":@(previous),@"configured_mode":@(mode),
+            @"check_id":check[@"id"]?:@"",@"provider_argument_observed":@NO,@"authorization_confirmed":@NO});
+        if(completion)completion(YES,previous==(int)mode?@"Mode was already configured.":@"Local mode configuration changed. Spotify's response is not yet known.");
+    });
 }
 static NSString *urlText(id value) {
     if([value respondsToSelector:@selector(absoluteString)])return [value absoluteString];
@@ -103,11 +221,10 @@ static BOOL nativeState(id wrapper,void **manager,uintptr_t *image,NSMutableDict
             memcmp(stub,SAPRestrictionTrampoline,sizeof(stub)))return NO;
     } else if(memcmp(code,setterCode,sizeof(code)))return NO;
     out[@"restriction_guard_active"]=@(guarded);
-    uint32_t keyModeInstruction=0;
-    if(readMemory(*image+0x3594f60,&keyModeInstruction,sizeof(keyModeInstruction))) {
-        if(keyModeInstruction==UINT32_C(0x52800022))out[@"offline_key_request_mode"]=@1;
-        else if(keyModeInstruction==UINT32_C(0x52800002))out[@"offline_key_request_mode"]=@0;
-    }
+    int modeKind=keyModeKind(*image);
+    out[@"key_mode_runtime_selectable"]=@(modeKind==2);
+    out[@"configured_key_request_mode"]=@(modeKind==2?configuredKeyMode():modeKind);
+    out[@"offline_key_request_mode"]=out[@"configured_key_request_mode"];
     // Widened to also cover +0x2b0/+0x2b4: the live reservation counters the slot-reserving
     // function (analysis/queue_track_limit.txt @0x10533b28c) compares against these same
     // limits before it returns TOO_MANY_TRACKS(19). Cross-checked against analysis/queue_restriction_refs.txt.
@@ -146,6 +263,8 @@ static void requestQuotaRaise(NSString *trigger) {
     });
 }
 static void *captureInit(void *self,SEL sel,void *scheduler,void *manager,void *sync,void *metadata) {
+    SAPTraceHookCalled(object_getClass((__bridge id)self),sel);
+    SAP_TRACE("native_manager","initializer_invoked",SAPTraceCurrentOperation(),@{@"scheduler_present":@(scheduler!=NULL),@"offline_manager_present":@(manager!=NULL)});
     // Raw pointers preserve the init method's retained-result/consumed-self ABI.
     void *result=originalInit(self,sel,scheduler,manager,sync,metadata);
     if(result) {
@@ -166,6 +285,8 @@ static BOOL methodSignature(Class cls,SEL sel,unsigned arguments,char returns,Me
 void SAPInstallNativeOffline(void) {
     static dispatch_once_t once;
     dispatch_once(&once,^{
+        NSInteger saved=[NSUserDefaults.standardUserDefaults integerForKey:keyModePreference];
+        atomic_store_explicit(&requestedKeyMode,saved==1?1:0,memory_order_relaxed);
         Class cls=NSClassFromString(@"SPTOfflineManagerImplementation");
         if(!cls)return;
         SEL selector=NSSelectorFromString(@"initWithScheduler:offlineManager:syncManager:metadataModel:");
@@ -175,6 +296,7 @@ void SAPInstallNativeOffline(void) {
             if(type[0]=='@') {
                 originalInit=(void *)method_getImplementation(method);
                 class_replaceMethod(cls,selector,(IMP)captureInit,method_getTypeEncoding(method));hookInstalled=YES;
+                SAPTraceRegisterHook(cls,selector,(IMP)captureInit,(IMP)originalInit);
             }
         }
         // Observes the exact call Spotify's playlist rows use to pick a download icon
@@ -184,6 +306,7 @@ void SAPInstallNativeOffline(void) {
         if(methodSignature(cls,stateSelector,3,'Q',&stateMethod)) {
             originalStateForTrack=(void *)method_getImplementation(stateMethod);
             IMP replacement=imp_implementationWithBlock(^unsigned long long(id receiver,id url){
+                SAPTraceHookCalled(object_getClass(receiver),stateSelector);
                 unsigned long long result=originalStateForTrack(receiver,stateSelector,url);
                 if(SAPDiagnosticsEnabled())SAPJournalNoteRowState(urlText(url),(NSUInteger)result);
                 return result;
@@ -191,6 +314,7 @@ void SAPInstallNativeOffline(void) {
             if(!class_addMethod(cls,stateSelector,replacement,method_getTypeEncoding(stateMethod)))
                 class_replaceMethod(cls,stateSelector,replacement,method_getTypeEncoding(stateMethod));
             queueHookInstalled=YES;
+            SAPTraceRegisterHook(cls,stateSelector,replacement,(IMP)originalStateForTrack);
         }
         // Кнопка «Скачать» на плейлисте/альбоме: полный список треков, которые Spotify
         // действительно отправил в офлайн (analysis/native-download-api.md).
@@ -198,28 +322,47 @@ void SAPInstallNativeOffline(void) {
         if(methodSignature(cls,entitySelector,4,'v',&entityMethod)) {
             originalMakeEntity=(void *)method_getImplementation(entityMethod);
             IMP replacement=imp_implementationWithBlock(^(id receiver,id url,id trackURLs){
+                SAPTraceHookCalled(object_getClass(receiver),entitySelector);
+                SAPTraceID trace=SAPTraceIsActive()?SAPTraceBegin(@"native_entity_download",@"spotify_ui",@{@"uri":urlText(url)?:@"",@"track_count":@([trackURLs isKindOfClass:NSArray.class]?[trackURLs count]:0)}):0;
                 if(SAPDiagnosticsEnabled())SAPJournalNoteEntityRequest(urlText(url),trackURLs);
-                originalMakeEntity(receiver,entitySelector,url,trackURLs);
+                SAPJournalNoteAction(@"native_entity_add_called",@{@"entity_uri":urlText(url)?:@"",
+                    @"track_count":@([trackURLs isKindOfClass:NSArray.class]?[(NSArray *)trackURLs count]:0),
+                    @"result_observed":@NO});
+                SAPTraceWithOperation(trace,^{originalMakeEntity(receiver,entitySelector,url,trackURLs);});
+                SAP_TRACE("native_entity","handler_returned",trace,@{@"download_completion_confirmed":@NO});
             });
             class_replaceMethod(cls,entitySelector,replacement,method_getTypeEncoding(entityMethod));entityHookInstalled=YES;
+            SAPTraceRegisterHook(cls,entitySelector,replacement,(IMP)originalMakeEntity);
         }
         SEL entityOnly=NSSelectorFromString(@"makeEntityAvailableOfflineWithURL:");Method entityOnlyMethod;
         if(methodSignature(cls,entityOnly,3,'v',&entityOnlyMethod)) {
             originalMakeEntityOnly=(void *)method_getImplementation(entityOnlyMethod);
             IMP replacement=imp_implementationWithBlock(^(id receiver,id url){
+                SAPTraceHookCalled(object_getClass(receiver),entityOnly);
+                SAPTraceID trace=SAPTraceIsActive()?SAPTraceBegin(@"native_entity_download",@"spotify_ui",@{@"uri":urlText(url)?:@""}):0;
                 if(SAPDiagnosticsEnabled())SAPJournalNoteEntityRequest(urlText(url),nil);
-                originalMakeEntityOnly(receiver,entityOnly,url);
+                SAPJournalNoteAction(@"native_entity_add_called",@{@"entity_uri":urlText(url)?:@"",
+                    @"track_count":NSNull.null,@"result_observed":@NO});
+                SAPTraceWithOperation(trace,^{originalMakeEntityOnly(receiver,entityOnly,url);});
+                SAP_TRACE("native_entity","handler_returned",trace,@{@"download_completion_confirmed":@NO});
             });
             class_replaceMethod(cls,entityOnly,replacement,method_getTypeEncoding(entityOnlyMethod));
+            SAPTraceRegisterHook(cls,entityOnly,replacement,(IMP)originalMakeEntityOnly);
         }
         SEL resetSelector=NSSelectorFromString(@"resetEntityOfflineAvailabilityWithURL:");Method resetMethod;
         if(methodSignature(cls,resetSelector,3,'v',&resetMethod)) {
             originalResetEntity=(void *)method_getImplementation(resetMethod);
             IMP replacement=imp_implementationWithBlock(^(id receiver,id url){
+                SAPTraceHookCalled(object_getClass(receiver),resetSelector);
+                SAPTraceID trace=SAPTraceIsActive()?SAPTraceBegin(@"native_entity_remove",@"spotify_ui",@{@"uri":urlText(url)?:@""}):0;
                 if(SAPDiagnosticsEnabled())SAPJournalNoteEntityReset(urlText(url));
-                originalResetEntity(receiver,resetSelector,url);
+                SAPJournalNoteAction(@"native_entity_remove_called",@{@"entity_uri":urlText(url)?:@"",
+                    @"result_observed":@NO});
+                SAPTraceWithOperation(trace,^{originalResetEntity(receiver,resetSelector,url);});
+                SAP_TRACE("native_entity","handler_returned",trace,@{@"removal_completion_confirmed":@NO});
             });
             class_replaceMethod(cls,resetSelector,replacement,method_getTypeEncoding(resetMethod));
+            SAPTraceRegisterHook(cls,resetSelector,replacement,(IMP)originalResetEntity);
         }
         // Значок, который получает строка списка: 0 нет, 1 ожидание, 2 идёт, 3 скачан, 4 ошибка.
         Class iconClass=NSClassFromString(@"SPTFreeTierOfflineStatusUpdatingContentOperation");
@@ -227,6 +370,7 @@ void SAPInstallNativeOffline(void) {
         if(iconClass&&methodSignature(iconClass,iconSelector,3,'q',&iconMethod)) {
             originalSyncStatus=(NSInteger (*)(id,SEL,id))method_getImplementation(iconMethod);
             IMP replacement=imp_implementationWithBlock(^NSInteger(id receiver,id url){
+                SAPTraceHookCalled(object_getClass(receiver),iconSelector);
                 NSInteger status=originalSyncStatus(receiver,iconSelector,url);
                 if(SAPDiagnosticsEnabled())SAPJournalNoteUIStatus(urlText(url),status);
                 return status;
@@ -234,6 +378,7 @@ void SAPInstallNativeOffline(void) {
             if(!class_addMethod(iconClass,iconSelector,replacement,method_getTypeEncoding(iconMethod)))
                 class_replaceMethod(iconClass,iconSelector,replacement,method_getTypeEncoding(iconMethod));
             iconHookInstalled=YES;
+            SAPTraceRegisterHook(iconClass,iconSelector,replacement,(IMP)originalSyncStatus);
         }
         // Spotify can resync the real server-granted quota later (e.g. after a restrictions
         // refresh) and lower it again; these two cheap, bounded re-checks catch that instead
@@ -250,7 +395,7 @@ void SAPInstallNativeOffline(void) {
 }
 void SAPPrepareNativeOffline(BOOL (^stillRequested)(void),void (^completion)(BOOL,NSString *)) {
     SAPInstallNativeOffline();
-    SAPNativePreparation *operation=[SAPNativePreparation new];operation.completion=completion;
+    SAPNativePreparation *operation=[SAPNativePreparation new];operation.completion=completion;operation.traceOperation=SAPTraceCurrentOperation();
     id wrapper=nativeWrapper;
     if(!wrapper) { [operation finish:NO reason:SAPL(@"Нативный менеджер загрузки ещё не получен. Начни воспроизведение и повтори.",@"The native download manager is not available yet. Start playback and try again.") report:nil];return; }
     SEL schedulerSelector=NSSelectorFromString(@"scheduler"),post=NSSelectorFromString(@"postBlock:");
@@ -279,8 +424,43 @@ void SAPPrepareNativeOffline(BOOL (^stillRequested)(void),void (^completion)(BOO
             ((void(*)(void *,int32_t,int32_t,int32_t,int32_t,int32_t))(image+setterOffset))(manager,newDuration,newTrackLimit,[before[@"episode_duration_seconds"] intValue],[before[@"episode_limit"] intValue],[before[@"abp_duration_seconds"] intValue]);
         }
         NSMutableDictionary *after=[NSMutableDictionary dictionary];
-        BOOL ready=nativeState(wrapper,&manager,&image,after)&&[after[@"music_limit"] intValue]>=desiredTrackLimit&&[after[@"music_duration_seconds"] longLongValue]>=desiredDurationSeconds;
-        [operation finish:ready reason:ready?SAPL(@"Нативный менеджер подготовлен",@"Native download manager ready"):SAPL(@"Нативный менеджер не подтвердил разрешение музыкальной загрузки.",@"The native manager did not confirm permission to download music.") report:@{@"before":before,@"after":after,@"changed":@(changed),@"native_queue":@YES}];
+        BOOL stateValid=nativeState(wrapper,&manager,&image,after);
+        BOOL quotaReady=stateValid&&[after[@"music_limit"] intValue]>=desiredTrackLimit&&[after[@"music_duration_seconds"] longLongValue]>=desiredDurationSeconds;
+        BOOL patchReady=[after[@"restriction_guard_active"]boolValue] &&
+            ([after[@"key_mode_runtime_selectable"]boolValue] || [after[@"offline_key_request_mode"]intValue]==0);
+        BOOL ready=quotaReady&&patchReady;
+        after[@"quota_ready"]=@(quotaReady);after[@"local_patches_verified"]=@(patchReady);
+        BOOL valuesChanged=![[before objectForKey:@"music_limit"]isEqual:[after objectForKey:@"music_limit"]] ||
+            ![[before objectForKey:@"music_duration_seconds"]isEqual:[after objectForKey:@"music_duration_seconds"]];
+        after[@"quota_setter_invoked"]=@(changed);after[@"quota_values_changed"]=@(valuesChanged);
+        [operation finish:ready reason:ready?@"Local settings prepared; device licenses and download authorization have not been checked.":
+            @"Local download setup is incomplete: verify the installed Spotify executable and quota patch." report:
+            @{@"before":before,@"after":after,@"changed":@(valuesChanged),@"setter_invoked":@(changed),@"native_queue":@YES}];
+    });
+}
+void SAPReadNativeOfflineQuota(void (^completion)(NSDictionary *)) {
+    if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(),^{SAPReadNativeOfflineQuota(completion);});return;}
+    SAPInstallNativeOffline();
+    id wrapper=nativeWrapper;
+    SEL get=NSSelectorFromString(@"scheduler"),post=NSSelectorFromString(@"postBlock:");
+    id scheduler=[wrapper respondsToSelector:get]?((id(*)(id,SEL))objc_msgSend)(wrapper,get):nil;
+    if(!scheduler || ![scheduler respondsToSelector:post]) {
+        if(completion)completion(@{@"read_status":@"unavailable",@"error":@"Native manager queue is unavailable"});return;
+    }
+    __block BOOL finished=NO;__block dispatch_source_t timeout;
+    void (^finish)(NSDictionary *)=^(NSDictionary *result){
+        if(finished)return;finished=YES;
+        if(timeout){dispatch_source_cancel(timeout);timeout=nil;}
+        if(completion)completion(result);
+    };
+    timeout=SAPScheduleDeadline(dispatch_get_main_queue(),5,^{finish(@{@"read_status":@"timeout",@"error":@"Native manager did not answer within 5 seconds"});});
+    ((void(*)(id,SEL,id))objc_msgSend)(scheduler,post,^{
+        NSMutableDictionary *result=[NSMutableDictionary dictionary];void *manager=NULL;uintptr_t image=0;
+        BOOL valid=wrapper==nativeWrapper && nativeState(wrapper,&manager,&image,result);
+        result[@"read_status"]=valid?@"received":@"invalid";
+        result[@"observed_at"]=@(NSDate.date.timeIntervalSince1970);result[@"read_only"]=@YES;
+        if(!valid)result[@"error"]=@"Native manager identity or state could not be verified";
+        dispatch_async(dispatch_get_main_queue(),^{finish(result);});
     });
 }
 void SAPReadNativeTrackState(NSString *uri) {
@@ -298,7 +478,7 @@ void SAPReadNativeTrackState(NSString *uri) {
 
 void SAPSampleNativeOffline(void) {
     id wrapper=nativeWrapper;
-    if(!wrapper) {SAPJournalNoteQuota(@{@"ready":@NO,@"reason":@"read-only: manager unavailable"});return;}
+    if(!wrapper) {SAPJournalNoteQuota(@{@"local_prepared":@NO,@"authorization_checked":@NO,@"reason":@"read-only: manager unavailable"});return;}
     SEL getScheduler=NSSelectorFromString(@"scheduler"),post=NSSelectorFromString(@"postBlock:");
     if(![wrapper respondsToSelector:getScheduler])return;
     id scheduler=((id(*)(id,SEL))objc_msgSend)(wrapper,getScheduler);
@@ -306,8 +486,13 @@ void SAPSampleNativeOffline(void) {
     ((void(*)(id,SEL,id))objc_msgSend)(scheduler,post,^{
         void *manager=NULL;uintptr_t image=0;NSMutableDictionary *value=[NSMutableDictionary dictionary];
         BOOL valid=nativeState(wrapper,&manager,&image,value);value[@"valid"]=@(valid);
-        value[@"ready"]=@(valid && [value[@"music_limit"] intValue]>0 && [value[@"music_duration_seconds"] longLongValue]>0);
-        value[@"reason"]=@"read-only sample on native queue";
+        BOOL quotaReady=valid && [value[@"music_limit"]intValue]>=SAPMinimumTrackLimit &&
+            [value[@"music_duration_seconds"]longLongValue]>=SAPMinimumMusicDurationSeconds;
+        BOOL patchReady=[value[@"restriction_guard_active"]boolValue] &&
+            ([value[@"key_mode_runtime_selectable"]boolValue] || [value[@"offline_key_request_mode"]intValue]==0);
+        value[@"quota_ready"]=@(quotaReady);value[@"local_patches_verified"]=@(patchReady);
+        value[@"local_prepared"]=@(quotaReady&&patchReady);value[@"authorization_checked"]=@NO;
+        value[@"reason"]=@"read-only local setup sample; track-key authorization unverified";
         SAPJournalNoteQuota(value);
     });
 }
@@ -317,6 +502,7 @@ NSDictionary *SAPNativeOfflineReport(void) {
     out[@"hook_installed"]=@(hookInstalled);out[@"wrapper_available"]=@(nativeWrapper!=nil);
     out[@"queue_hook_installed"]=@(queueHookInstalled);out[@"entity_hook_installed"]=@(entityHookInstalled);
     out[@"icon_hook_installed"]=@(iconHookInstalled);
+    out[@"key_request_mode"]=SAPKeyRequestModeReport();
     return out;
 }
 #ifdef SAP_RUNTIME_TESTING

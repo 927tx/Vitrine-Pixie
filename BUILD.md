@@ -47,6 +47,8 @@ Release builds set `SAP_ENABLE_WAV_CAPTURE=0`. Encoded audio cache/export code r
 
 ## Jailbreak packages (rootless / rootful)
 
+**The published DEBs remain the previous release.** This v1.2 source update targets the IPA diagnostics/device-management changes; it does not rebuild or revalidate jailbreak execution. To reproduce the existing DEBs, use tag `pixie-9.1.90-jailbreak-1` rather than current `main`.
+
 These packages are for an original Spotify 9.1.90 installation on a jailbroken device. Install **one** package matching the jailbreak layout, then restart Spotify. Do not install on top of an IPA with Vitrine/Pixie already injected.
 
 After building the patched Vitrine library above, from this repository root:

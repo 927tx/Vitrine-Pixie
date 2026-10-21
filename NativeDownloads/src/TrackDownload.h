@@ -13,3 +13,5 @@ NSDictionary *SAPTrackDownloadReportWithJournal(NSDictionary *journalReport);
 // read-only and the callback is delivered on the main queue.
 void SAPCallReadOnlyService(NSString *serviceName, NSString *method, NSData *payload,
                             void (^completion)(NSData *response, NSString *error));
+// Explicit user command. One verified endpoint, one send, no replay on timeout.
+void SAPCallOfflineCommandOnce(NSString *method,NSData *payload,void (^completion)(NSData *,NSString *));

@@ -181,7 +181,7 @@ int main(void) {
         NSString *written = [NSString stringWithContentsOfURL:table encoding:NSUTF8StringEncoding error:NULL];
         assert([written containsString:@"waiting_limit_exceeded"] && [written containsString:@"TOO_MANY_TRACKS"]);
         NSString *summary = SAPJournalSummaryText();
-        assert([summary containsString:SAPL(@"Лицензии",@"Licenses")] && [summary containsString:SAPL(@"Очередь ядра",@"Core queue")]);
+        assert([summary containsString:@"Device licenses"] && [summary containsString:SAPL(@"Очередь ядра",@"Core queue")]);
         assert([summary containsString:SAPL(@"Проблемные треки",@"Tracks with issues")]);
 
         // 9. Постоянный лог на диске: весь путь треков, переживает перезапуск.

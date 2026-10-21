@@ -19,6 +19,10 @@ void SAPJournalNoteEntityReset(NSString *entity);
 void SAPJournalNoteUIStatus(NSString *uri, NSInteger status);
 // Счётчики квоты нативного менеджера (current_tracks/music_limit и т.д.).
 void SAPJournalNoteQuota(NSDictionary *quota);
+// Lightweight, always-on audit for explicit Pixie actions and exact local
+// before/after values. Never records secrets or infers a server response.
+void SAPJournalNoteAction(NSString *name, NSDictionary *facts);
+void SAPJournalFlushActions(void);
 void SAPJournalNoteNativeError(NSString *uri, NSNumber *code, NSString *name);
 void SAPJournalNoteNativeSuccess(NSString *uri, NSString *event);
 NSDictionary *SAPJournalNativeErrorForURI(NSString *uri);

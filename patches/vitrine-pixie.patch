@@ -214,6 +214,55 @@ index 4563ba0..c689293 100755
              if m:
                  self.thunks.append(int(m.group(1), 16))
  
+diff --git a/tweak/Sources/App/About/About.h b/tweak/Sources/App/About/About.h
+index bcb0bb1..3b70eb6 100644
+--- a/tweak/Sources/App/About/About.h
++++ b/tweak/Sources/App/About/About.h
+@@ -76,5 +76,6 @@ void SGImportSettings(void);
+ // log lines and the config Spotify's server last sent (Shared/AdBlock/Premium.m). No account details or settings
+ // values beyond the switches named; the log can name songs played.
+ void SGShareDiagnostics(void);
++NSURL *SGWriteDiagnosticsFile(void);
+ 
+ UIViewController *SGAboutPage(void);   // the Mod page
+diff --git a/tweak/Sources/App/About/AboutSettings.m b/tweak/Sources/App/About/AboutSettings.m
+index cae8f5f..6998b5d 100644
+--- a/tweak/Sources/App/About/AboutSettings.m
++++ b/tweak/Sources/App/About/AboutSettings.m
+@@ -71,8 +71,6 @@ UIViewController *SGAboutPage(void) {
+         SGSection(nil, @[
+             withSymbol(SGActionRow(@"Export settings", nil, ^{ SGExportSettings(); }), @"square.and.arrow.up"),
+             withSymbol(SGActionRow(@"Import settings", nil, ^{ SGImportSettings(); }), @"square.and.arrow.down"),
+-            withSymbol(SGActionRow(@"Share diagnostics", @"For a bug report: versions, ad counts, this launch's log and Spotify's config. Song names can show.",
+-                                   ^{ SGShareDiagnostics(); }), @"stethoscope"),
+         ]),
+         SGSection(nil, @[reset]),
+     ] footer:nil];
+diff --git a/tweak/Sources/App/About/Backup.m b/tweak/Sources/App/About/Backup.m
+index 082271a..fae0171 100644
+--- a/tweak/Sources/App/About/Backup.m
++++ b/tweak/Sources/App/About/Backup.m
+@@ -52,7 +52,7 @@ void SGExportSettings(void) {
+     [top presentViewController:sheet animated:YES completion:nil];
+ }
+ 
+-void SGShareDiagnostics(void) {
++NSURL *SGWriteDiagnosticsFile(void) {
+     NSMutableString *text = [NSMutableString string];
+     struct utsname machine;
+     uname(&machine);
+@@ -90,6 +90,11 @@ void SGShareDiagnostics(void) {
+ 
+     NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"vitrine-diagnostics.txt"]];
+     [text writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:nil];
++    return url;
++}
++
++void SGShareDiagnostics(void) {
++    NSURL *url = SGWriteDiagnosticsFile();
+     UIViewController *top = SGTopController();
+     UIActivityViewController *sheet = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+     sheet.popoverPresentationController.sourceView = top.view;
 diff --git a/tweak/Sources/Redesigned/Album/AlbumHeader.x b/tweak/Sources/Redesigned/Album/AlbumHeader.x
 index 4b48da5..1bcf457 100644
 --- a/tweak/Sources/Redesigned/Album/AlbumHeader.x

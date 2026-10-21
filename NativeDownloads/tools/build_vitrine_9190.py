@@ -10,7 +10,8 @@ from zipfile import ZipFile
 
 from patch_imports import patch as patch_audio_imports
 from patch_native_restrictions import patch as patch_limits, guard_header, limits_header, layout
-from patch_key_request_mode import patch as patch_key_mode
+from patch_key_request_mode import patch as patch_key_mode, key_header
+from patch_native_trace import patch as patch_native_trace,header as native_trace_header
 
 ROOT = Path(__file__).resolve().parents[1]
 UUID = bytes.fromhex("fbce22c17e1b3e0d9be866ff9291943e")
@@ -19,7 +20,8 @@ SOURCE_FILES = [
     "AVAudioHooks.m", "SourceGraph.c", "OfflineFlags.m", "WireProto.m",
     "OfflineConfig.m", "TrackJournal.m", "NativeErrorLog.m", "PlayerTrace.m",
     "NativeOffline.m", "TrackDownload.m", "AudioProbeUI.m", "DownloadSettingsUI.m",
-    "EncodedAudio.m", "AlbumMetadata.m",
+    "EncodedAudio.m", "AlbumMetadata.m", "SupportLog.m", "DownloadCompatibility.m", "OfflineDevices.m",
+    "DiagnosticTrace.m", "TracePlatform.m", "NativeKeyTrace.m",
 ]
 
 
@@ -31,6 +33,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ipa", type=Path)
     parser.add_argument("--vitrine-dylib", type=Path, help="Vitrine rebuilt from the local sources")
+    parser.add_argument("--fixed-key-mode-zero", action="store_true", help="Recovery rollback: use the direct mode-0 instruction from the last working build, without the runtime selector")
     parser.add_argument("--output", type=Path, default=ROOT / "outputs/pixie-9.1.90/Spotify-9.1.90-Pixie.ipa")
     args = parser.parse_args()
     source = args.ipa.resolve()
@@ -47,6 +50,10 @@ def main():
         raise RuntimeError("Native restriction header is out of sync")
     if (ROOT / "src/OfflineLimits.h").read_text() != limits_header():
         raise RuntimeError("Offline limits header is out of sync")
+    if (ROOT / "src/NativeKeyModePatch.h").read_text() != key_header():
+        raise RuntimeError("Native key-mode header is out of sync")
+    if (ROOT / "src/NativeTracePatch.h").read_text() != native_trace_header():
+        raise RuntimeError("Native trace header is out of sync")
 
     with ZipFile(source) as archive:
         info_name = "Payload/Spotify.app/Info.plist"
@@ -62,7 +69,10 @@ def main():
 
     patched, audio = patch_audio_imports(native)
     patched, limits = patch_limits(patched)
-    patched, key = patch_key_mode(patched)
+    patched, key = patch_key_mode(patched, runtime_selectable=False)
+    patched, native_trace = patch_native_trace(patched)
+    key['implementation']='verified static observation boundary restores fixed w2=0 before the original indirect call'
+    key['configuration_source']='verified_static_trace_argument'
     output.parent.mkdir(parents=True, exist_ok=True)
     sdk = subprocess.check_output(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], text=True).strip()
     with tempfile.TemporaryDirectory(prefix="vitrine-9190-") as temporary:
@@ -89,7 +99,7 @@ def main():
             "-DSAP_ENABLE_WAV_CAPTURE=0", *(ROOT / "src" / name for name in SOURCE_FILES),
             "-framework", "AudioToolbox", "-framework", "Foundation", "-framework", "UIKit",
             "-framework", "AVFAudio", "-framework", "CoreGraphics", "-framework", "AVFoundation",
-            "-framework", "CoreMedia", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "-o", companion)
+            "-framework", "CoreMedia", "-framework", "Network", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "-o", companion)
         run("codesign", "--force", "--sign", "-", "--timestamp=none", companion)
         binary = temporary / "Spotify"
         binary.write_bytes(patched)
@@ -112,7 +122,7 @@ def main():
             raise RuntimeError("IPA ZIP integrity check failed")
     print(json.dumps({"output": str(output), "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
                       "spotify_uuid": UUID.hex(), "audio_imports": audio,
-                      "native_limits": limits, "key_request_mode": key}, indent=2))
+                      "native_limits": limits, "key_request_mode": key, "native_observation": native_trace}, indent=2))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 #include "JailbreakPatches.h"
 #include "NativeRestrictionsPatch.h"
+#include "NativeKeyModePatch.h"
 #include "NativeKeyPatch.h"
 #include <mach-o/loader.h>
 #include <mach/machine.h>
@@ -41,30 +42,42 @@ bool SAPJBApplyPatches(uint8_t *image,size_t textSize,SAPJBWrite writer,void *co
         {SAPJBKeyWindowOffset,sizeof(SAPJBKeyOriginal)},
         {SAPJBProviderOffset,sizeof(SAPJBProviderOriginal)},
         {SAPJBMappingOffset,sizeof(SAPJBMappingOriginal)},
+        {SAPJBDLSymStubOffset,sizeof(SAPJBDLSymStubOriginal)},
+        {SAPKeyModeCaveOffset,sizeof(SAPKeyModeTrampoline)},
         {SAPRestrictionCaveOffset,sizeof(SAPRestrictionTrampoline)}};
     for(size_t i=0;i<sizeof(spans)/sizeof(*spans);i++)
         if(spans[i].offset>textSize||spans[i].length>textSize-spans[i].offset)return false;
     if(SAPRestrictionCaveOffset<end||SAPRestrictionCaveOffset+sizeof(SAPRestrictionTrampoline)>firstSection)return false;
+    if(SAPKeyModeCaveOffset<end||SAPKeyModeCaveOffset+sizeof(SAPKeyModeTrampoline)>firstSection||
+       SAPKeyModeCaveOffset+sizeof(SAPKeyModeTrampoline)>SAPRestrictionCaveOffset)return false;
     uint8_t *setter=image+SAPJBSetterOffset,*cave=image+SAPRestrictionCaveOffset,*key=image+SAPJBKeyWindowOffset;
+    uint8_t *keyCave=image+SAPKeyModeCaveOffset;
     bool guarded=!memcmp(setter,SAPGuardedSetterHead,4)&&
         !memcmp(setter+4,SAPJBSetterOriginal+4,sizeof(SAPJBSetterOriginal)-4)&&
         !memcmp(cave,SAPRestrictionTrampoline,sizeof(SAPRestrictionTrampoline));
     if(!guarded&&(memcmp(setter,SAPJBSetterOriginal,sizeof(SAPJBSetterOriginal))||!zeroes(cave,sizeof(SAPRestrictionTrampoline))))
         return fail(reason,"restriction_guard_mismatch");
     bool keyPatched=!memcmp(key,SAPJBKeyPatched,sizeof(SAPJBKeyPatched));
-    if((!keyPatched&&memcmp(key,SAPJBKeyOriginal,sizeof(SAPJBKeyOriginal)))||
+    bool keyStaticZero=!memcmp(key,SAPJBKeyStaticZero,sizeof(SAPJBKeyStaticZero));
+    if((!keyPatched&&!keyStaticZero&&memcmp(key,SAPJBKeyOriginal,sizeof(SAPJBKeyOriginal)))||
        memcmp(image+SAPJBProviderOffset,SAPJBProviderOriginal,sizeof(SAPJBProviderOriginal))||
-       memcmp(image+SAPJBMappingOffset,SAPJBMappingOriginal,sizeof(SAPJBMappingOriginal)))
+       memcmp(image+SAPJBMappingOffset,SAPJBMappingOriginal,sizeof(SAPJBMappingOriginal))||
+       memcmp(image+SAPJBDLSymStubOffset,SAPJBDLSymStubOriginal,sizeof(SAPJBDLSymStubOriginal))||
+       (keyPatched?memcmp(keyCave,SAPKeyModeTrampoline,sizeof(SAPKeyModeTrampoline)):
+                    !zeroes(keyCave,sizeof(SAPKeyModeTrampoline))))
         return fail(reason,"key_requester_mismatch");
     if(guarded&&keyPatched){if(reason)*reason="already_applied";return true;}
     if(!writer)return fail(reason,"no_memory_writer");
-    uint8_t oldCave[sizeof(SAPRestrictionTrampoline)],oldHead[4],oldKey[4];
-    memcpy(oldCave,cave,sizeof(oldCave));memcpy(oldHead,setter,4);memcpy(oldKey,image+SAPJBKeyCallOffset,4);
+    uint8_t oldCave[sizeof(SAPRestrictionTrampoline)],oldKeyCave[sizeof(SAPKeyModeTrampoline)],oldHead[4],oldKey[4];
+    memcpy(oldCave,cave,sizeof(oldCave));memcpy(oldKeyCave,keyCave,sizeof(oldKeyCave));
+    memcpy(oldHead,setter,4);memcpy(oldKey,image+SAPJBKeyCallOffset,4);
     if(!guarded) {
         writer(cave,SAPRestrictionTrampoline,sizeof(SAPRestrictionTrampoline),context);
         if(memcmp(cave,SAPRestrictionTrampoline,sizeof(SAPRestrictionTrampoline)))goto rollback;
     }
     if(!keyPatched) {
+        writer(keyCave,SAPKeyModeTrampoline,sizeof(SAPKeyModeTrampoline),context);
+        if(memcmp(keyCave,SAPKeyModeTrampoline,sizeof(SAPKeyModeTrampoline)))goto rollback;
         writer(image+SAPJBKeyCallOffset,SAPJBKeyPatched+(SAPJBKeyCallOffset-SAPJBKeyWindowOffset),4,context);
         if(memcmp(key,SAPJBKeyPatched,sizeof(SAPJBKeyPatched)))goto rollback;
     }
@@ -77,6 +90,7 @@ bool SAPJBApplyPatches(uint8_t *image,size_t textSize,SAPJBWrite writer,void *co
 rollback:
     writer(setter,oldHead,4,context);
     writer(image+SAPJBKeyCallOffset,oldKey,4,context);
+    writer(keyCave,oldKeyCave,sizeof(oldKeyCave),context);
     writer(cave,oldCave,sizeof(oldCave),context);
     return fail(reason,"memory_write_failed");
 }

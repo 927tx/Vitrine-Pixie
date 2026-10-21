@@ -2,12 +2,19 @@
 #import "AudioProbeUI.h"
 @implementation SAPSettingsActions
 + (NSDictionary *)snapshot {
- return @{@"report":@{},@"diagnostics":@"v22 · библиотека готова\nPCM получен\n\nCallback: 8169 · Кадров: 7685396\nPCM: 61483168 байт\n48000 Hz · 2 ch · 32 bit · lpcm\nИсточник: Spotify\nВыход: AirPods Pro 3\nОшибок: 0",@"journal_summary":@"Скачано: 118\nВ очереди: 0\nОшибок: 0\n\nВсе загрузки завершены.",@"download_active":@NO,@"recording":@NO,@"last_wav_available":@YES};
+ return @{@"report":@{},@"diagnostics":@"Audio diagnostics disabled",@"journal_summary":@"Downloaded: 118\nWaiting: 0\nErrors: 0",@"download_active":@NO,@"recording":@NO,@"last_wav_available":@NO,@"key_request_mode":@{@"selected_mode":@0,@"configured_mode":@0,@"last_selector_returned_mode":@(-1),@"runtime_selection_supported":@YES,@"restart_required":@NO,@"detail":@"Local configuration only; download authorization is unconfirmed. Fresh quotas and license reads are required before a mode change."}};
 }
 + (NSDictionary *)snapshotForDetails:(BOOL)journal {return [self snapshot];}
 + (void)loadDetails:(BOOL)journal completion:(void (^)(NSDictionary *))completion {dispatch_async(dispatch_get_main_queue(),^{completion([self snapshot]);});}
 + (void)perform:(SAPSettingsAction)action { }
++ (void)setKeyRequestMode:(NSInteger)mode completion:(void (^)(BOOL,NSString *))completion {NSCAssert(mode==0,@"Selecting mode 1 must not be offered");if(completion)completion(NO,@"Spotify reports 0 free device-license slots. Mode was not changed.");}
++ (void)refreshDownloadCompatibility:(void (^)(NSDictionary *))completion {if(completion)completion(@{@"status":@"complete"});}
++ (void)previewOfflineDeviceSlots:(void (^)(NSDictionary *,NSString *))completion {completion(nil,@"fixture: no mutation performed");}
++ (void)releaseOfflineDeviceSlots:(NSString *)planID cacheIDs:(NSArray *)cacheIDs completion:(void (^)(NSDictionary *,NSString *))completion {completion(nil,@"fixture: no mutation performed");}
++ (void)enableOfflineOnCurrentDevice:(void (^)(NSDictionary *,NSString *))completion {completion(nil,@"fixture: no mutation performed");}
 @end
+void SAPJournalNoteAction(NSString *name,NSDictionary *facts) {}
+NSString *SAPDownloadCompatibilityText(NSDictionary *report) {return @"Device licenses: 0 of 5 free. Mode was not changed.";}
 
 // SAPFixtureChrome: stand-in for Spotify's existing mini-player controller.
 @interface _TtC18NowPlaying_BarImpl27NowPlayingBarViewController : UIViewController @end

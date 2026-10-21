@@ -90,7 +90,7 @@ class ChromeHost:UIViewController {
    list.setContentOffset(CGPoint(x:0,y:max(-list.adjustedContentInset.top,list.contentSize.height-list.bounds.height+list.adjustedContentInset.bottom)),animated:false)
    DispatchQueue.main.asyncAfter(deadline:.now()+0.7){
     self.capture("root-settings")
-    let cellRect=entry.convert(entry.rectForRow(at:IndexPath(row:0,section:0)),to:window)
+    let cellRect=entry.convert(entry.rectForRow(at:IndexPath(row:1,section:0)),to:window)
     let miniTop=chrome.mini.view.convert(chrome.mini.view.bounds,to:window).minY
     self.write("root last row bottom=\(cellRect.maxY); mini top=\(miniTop)")
     precondition(cellRect.maxY<=miniTop-10,"root row under mini-player")
@@ -103,19 +103,32 @@ class ChromeHost:UIViewController {
     DispatchQueue.main.asyncAfter(deadline:.now()+0.8){
      self.capture("downloads-top")
      guard let page=nav.topViewController as? UITableViewController else{return}
-     precondition(page.tableView.numberOfSections==3)
+     precondition(page.tableView.numberOfSections==5)
+     precondition(page.tableView.numberOfRows(inSection:1)==4,"quota/license/device rows missing")
+     let modeCell=page.tableView.dataSource!.tableView(page.tableView,cellForRowAt:IndexPath(row:0,section:1))
+     precondition((modeCell.contentConfiguration as? UIListContentConfiguration)?.text=="Configured request mode","selected mode must not be presented as verified execution")
+     precondition(!modeCell.isUserInteractionEnabled,"mode 0 must be read-only")
+     let modeFooter=page.tableView.dataSource!.tableView?(page.tableView,titleForFooterInSection:1) ?? ""
+     precondition(modeFooter.contains("5 licenses = up to 5 devices with offline music."))
+     precondition(!modeFooter.lowercased().contains("recovery"))
+     let refreshCell=page.tableView.dataSource!.tableView(page.tableView,cellForRowAt:IndexPath(row:1,section:1))
+     precondition((refreshCell.contentConfiguration as? UIListContentConfiguration)?.text=="Refresh quotas and licenses")
+     for (row,title) in [(2,"Manage offline device slots"),(3,"Enable offline listening on this copy")] {
+      let cell=page.tableView.dataSource!.tableView(page.tableView,cellForRowAt:IndexPath(row:row,section:1))
+      precondition((cell.contentConfiguration as? UIListContentConfiguration)?.text==title)
+     }
      precondition(page.title=="Pixie Download Manager","Pixie must remain in English")
-     for section in 0..<3 {for row in 0..<page.tableView.numberOfRows(inSection:section) {
+     for section in 0..<page.tableView.numberOfSections {for row in 0..<page.tableView.numberOfRows(inSection:section) {
       let cell=page.tableView.dataSource!.tableView(page.tableView,cellForRowAt:IndexPath(row:row,section:section))
       if let content=cell.contentConfiguration as? UIListContentConfiguration {
        precondition(!(content.text ?? "").contains("WAV"),"WAV row still present")
        precondition(!(content.text ?? "").contains("Заглушить") && !(content.text ?? "").contains("Mute audio"),"mute row still present")
+       precondition(!(content.text ?? "").contains("Export") && !(content.text ?? "").contains("Send log"),"duplicate log export row")
       }
      }}
-     page.tableView.setContentOffset(CGPoint(x:0,y:max(0,page.tableView.contentSize.height-page.tableView.bounds.height+page.tableView.adjustedContentInset.bottom)),animated:false)
+     page.tableView.scrollToRow(at:IndexPath(row:0,section:3),at:.middle,animated:false)
      DispatchQueue.main.asyncAfter(deadline:.now()+0.5){
-      self.capture("downloads-bottom")
-      let togglePath=IndexPath(row:0,section:2)
+      let togglePath=IndexPath(row:0,section:3)
       if let toggle=page.tableView.cellForRow(at:togglePath)?.accessoryView as? UISwitch {
        precondition(!toggle.isOn,"diagnostics must default off")
        toggle.isOn=true;toggle.sendActions(for:.valueChanged)
@@ -125,10 +138,13 @@ class ChromeHost:UIViewController {
        self.write("PASS: legacy and module-qualified native page protocols; diagnostics switch defaults OFF and toggles ON/OFF")
       } else {preconditionFailure("diagnostics switch not visible")}
 
-      let last=page.tableView.convert(page.tableView.rectForRow(at:IndexPath(row:2,section:2)),to:window)
+      page.tableView.setContentOffset(CGPoint(x:0,y:max(0,page.tableView.contentSize.height-page.tableView.bounds.height+page.tableView.adjustedContentInset.bottom)),animated:false)
+      page.tableView.layoutIfNeeded()
+      self.capture("downloads-bottom")
+      let last=page.tableView.convert(page.tableView.rectForRow(at:IndexPath(row:1,section:4)),to:window)
       self.write("downloads last row bottom=\(last.maxY); mini top=\(miniTop); inset=\(page.tableView.contentInset)")
       precondition(last.maxY<=miniTop-10,"downloads row under mini-player")
-      page.tableView.delegate?.tableView?(page.tableView,didSelectRowAt:IndexPath(row:1,section:2))
+      page.tableView.delegate?.tableView?(page.tableView,didSelectRowAt:IndexPath(row:1,section:3))
       DispatchQueue.main.asyncAfter(deadline:.now()+0.7){self.capture("diagnostics");self.write("PASS: entry spacing, mini-player clearance, navigation and native pages rendered")}
      }
     }

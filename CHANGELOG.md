@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-21 — Pixie Manager v1.2 sources
+
+- Added optional detailed diagnostic tracing and a single JSON export.
+- Added offline-device management to inspect devices and remove selected devices, freeing download slots.
+- Added trace, compatibility, device-management and support-log fixtures, with native observation patch guards.
+- Consolidated diagnostic export in Pixie settings.
+- Local tests and simulator checks passed during development; latest diagnostic changes are not yet verified on an iPhone.
+- Previous jailbreak DEBs and their release remain unchanged. This is a source update, not a rebuilt DEB release.
+
 ## 2026-10-20 — Local files fix and jailbreak packages
 
 - Fixed a crash while resolving cover artwork for local tracks when Spotify receives malformed or unrelated metadata URLs. Valid local paths, file URLs and local-image URIs remain supported.

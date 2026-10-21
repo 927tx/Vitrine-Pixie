@@ -2,7 +2,7 @@
 
 Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https://github.com/My-Name-Is-Jeff/vitrine), with native offline downloads and a download manager.
 
-**Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
+**Pixie Manager: v1.2** · **Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
 
 ## Downloads and updates
 
@@ -31,9 +31,15 @@ The Pixie extension targets Spotify **9.1.90**, ARM64 UUID `fbce22c17e1b3e0d9be8
 
 Native downloads and album controls were checked on an iPhone 15 Pro Max, iOS 27.0.1, using LiveContainer. Vitrine's Liquid Glass redesign requires iOS 26 or later. Long-term offline licence renewal has not been verified.
 
-## Latest update
+## Latest update — Pixie Manager v1.2
 
-Fixed a local-file artwork crash caused by malformed metadata URLs. Added jailbreak packaging and its sources. See [CHANGELOG.md](CHANGELOG.md).
+- Detailed diagnostic tracing runs only while diagnostics are enabled.
+- Export diagnostics as one JSON file.
+- Manage offline devices and remove selected devices to free download slots.
+
+Local component tests and the settings simulator passed during development. The latest diagnostics changes have not yet been verified on an iPhone. The regular download baseline was tested through LiveContainer and SideStore.
+
+The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from v1.2 sources. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Source and build
 
