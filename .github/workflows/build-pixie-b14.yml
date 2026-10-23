@@ -1,0 +1,41 @@
+
+name: Test Vitrine beta 14 + Pixie
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Pixie
+        uses: actions/checkout@v4
+
+      - name: Clone Vitrine beta 14
+        run: |
+          git clone \
+            --branch v1.0.0-beta.14 \
+            --depth 1 \
+            https://github.com/My-Name-Is-Jeff/vitrine.git \
+            vitrine
+
+      - name: Verify Vitrine revision
+        run: |
+          git -C vitrine log -1 --format='%h %s'
+          git -C vitrine describe --tags --exact-match
+
+      - name: Check Pixie patch compatibility
+        run: |
+          set -euo pipefail
+
+          PATCH="$GITHUB_WORKSPACE/patches/vitrine-pixie.patch"
+
+          test -f "$PATCH"
+
+          git -C vitrine apply --check "$PATCH"
+
+          echo "Pixie source patch applies cleanly."
