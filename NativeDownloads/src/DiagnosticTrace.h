@@ -14,6 +14,8 @@ void SAPTraceEvent(const char *category,const char *stage,SAPTraceID operation,N
 NSDictionary *SAPTraceReport(void);
 NSDictionary *SAPTraceExport(void);
 void SAPTraceFlush(void);
+// Manual action, executed outside the main thread. Never enables diagnostics.
+BOOL SAPTraceReset(NSError **error);
 
 // Registration retains only fixed hook metadata, even while tracing is off.
 // No diagnostic queue, file, callback wrapper or timer is created in that state.
@@ -39,4 +41,5 @@ NSDictionary *SAPTraceWireSummary(NSString *service,NSString *method,NSData *dat
 #ifdef SAP_TESTING
 void SAPTraceTestConfigure(NSURL *directory,NSUInteger maximumBytes,NSUInteger pendingLimit,double rpcTimeout);
 void SAPTraceTestDrain(void);
+void SAPTraceTestSetResetObserver(dispatch_block_t observer);
 #endif

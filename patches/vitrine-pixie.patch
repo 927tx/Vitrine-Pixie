@@ -104,6 +104,108 @@ index 9e80d32..65dcb9c 100755
 +    -fobjc-arc -g -Wall -Werror -I"$SRC" "$HERE/cover.m" "$SRC/Shared/LocalFiles/LocalCover.m" "$SRC/Shared/LocalFiles/LocalFiles.m" \
 +    -framework UIKit -framework MediaPlayer -framework CoreGraphics -framework Foundation -o "$HERE/build/cover"
 +CFFIXED_USER_HOME="$HERE/build/home" "$HERE/build/cover"
+diff --git a/harness/local-files/cover.m b/harness/local-files/cover.m
+new file mode 100644
+index 0000000..73f088f
+--- /dev/null
++++ b/harness/local-files/cover.m
+@@ -0,0 +1,96 @@
++// Regression for Spotify 9.1.90's unchecked local-image URI parser. Exercise the
++// actual fallback resolver with unrelated URLs, malformed URIs and valid covers.
++#import <UIKit/UIKit.h>
++#import <MediaPlayer/MediaPlayer.h>
++#import <objc/runtime.h>
++#import "Headers/SPTPlayer.h"
++#import "Shared/LocalFiles/LocalFiles.h"
++
++#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAILED line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
++
++static NSUInteger legacyCalls, sequence;
++@interface NSURL (SGCrashFixture)
++- (NSString *)spt_localFileImagePath;
++@end
++@implementation NSURL (SGCrashFixture)
++- (NSString *)spt_localFileImagePath {
++    legacyCalls++;
++    NSArray *parts = [self.absoluteString componentsSeparatedByString:@":"];
++    return [parts[2] stringByRemovingPercentEncoding];
++}
++@end
++
++@interface SGTestLocalTrack : NSObject
++@property(nonatomic, strong) NSURL *URI;
++@property(nonatomic, copy) NSDictionary *metadata;
++@property(nonatomic, copy) NSString *trackTitle, *artistName;
++@end
++@implementation SGTestLocalTrack @end
++@interface SGTestNowPlaying : NSObject
++@property(nonatomic, copy) NSDictionary *nowPlayingInfo;
++@end
++@implementation SGTestNowPlaying @end
++
++NSString *SGURIString(id uri) {
++    return [uri isKindOfClass:NSURL.class] ? [uri absoluteString] : uri;
++}
++static SGTestLocalTrack *track(NSDictionary *metadata) {
++    SGTestLocalTrack *t = [SGTestLocalTrack new];
++    t.URI = [NSURL URLWithString:[NSString stringWithFormat:@"spotify:local:Fixture:Album:Track%lu:60", (unsigned long)++sequence]];
++    t.metadata = metadata; t.trackTitle = @"Cover fixture"; t.artistName = @"Fixture artist";
++    return t;
++}
++static UIImage *resolve(SGTestLocalTrack *t) {
++    return SGLocalFileFallbackCover((SPTPlayerTrack *)t);
++}
++int main(void) { @autoreleasepool {
++    [NSUserDefaults.standardUserDefaults removeObjectForKey:SGKeyLocalFileEdits];
++    SGTestNowPlaying *center = [SGTestNowPlaying new];
++    Method getter = class_getClassMethod(MPNowPlayingInfoCenter.class, @selector(defaultCenter));
++    IMP replacement = imp_implementationWithBlock(^id(id self) { return center; });
++    IMP original = method_setImplementation(getter, replacement);
++    @try {
++        for (id address in @[@"cover.jpg", @"https://example.invalid/cover.jpg",
++                [NSURL URLWithString:@"https://example.invalid/cover.jpg"],
++                @"spotify:image:abc", @"spotify:localfileimage", @"spotify:localfileimage:",
++                @"spotify:localfileimage:relative.jpg", @"spotify:localfileimage:/tmp/a:b.jpg",
++                @42, NSNull.null]) {
++            CHECK(!resolve(track(@{@"image_xlarge_url": address})));
++        }
++        UIImage *image = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(4, 4)]
++            imageWithActions:^(UIGraphicsImageRendererContext *context) {
++                [UIColor.redColor setFill]; UIRectFill(CGRectMake(0, 0, 4, 4));
++            }];
++        NSString *file = [NSTemporaryDirectory() stringByAppendingPathComponent:@"local cover: artwork.png"];
++        CHECK([UIImagePNGRepresentation(image) writeToFile:file atomically:YES]);
++        for (id address in @[file, [NSURL fileURLWithPath:file], SGLocalFileCoverURL(file),
++                [NSURL URLWithString:SGLocalFileCoverURL(file)], image]) {
++            CHECK(resolve(track(@{@"image_xlarge_url": address})).CGImage);
++        }
++        CHECK(resolve(track(@{@"image_xlarge_url": @"cover.jpg", @"image_small_url": file})).CGImage);
++        SGTestLocalTrack *fallback = track(@{@"image_url": @"cover.jpg"});
++        center.nowPlayingInfo = @{MPMediaItemPropertyTitle: fallback.trackTitle,
++            MPMediaItemPropertyArtist: fallback.artistName,
++            MPMediaItemPropertyArtwork: [[MPMediaItemArtwork alloc] initWithBoundsSize:image.size
++                requestHandler:^UIImage *(CGSize size) { return image; }]};
++        CHECK(resolve(fallback).CGImage);
++        center.nowPlayingInfo = nil;
++        SGTestLocalTrack *edited = track(@{@"image_url": @"cover.jpg"});
++        SGLocalFileSaveEdit(edited.URI.absoluteString, @{}, image, YES);
++        CHECK(!resolve(edited));
++        SGLocalFileSaveEdit(edited.URI.absoluteString, @{}, nil, NO);
++        SGTestLocalTrack *remote = track(@{@"image_url": @"cover.jpg"});
++        remote.URI = [NSURL URLWithString:@"spotify:track:4uLU6hMCjMI75M1A2tKUQC"];
++        CHECK(!resolve(remote));
++        CHECK(legacyCalls == 0);
++        [NSFileManager.defaultManager removeItemAtPath:file error:nil];
++        puts("PASS: local covers; malformed/unrelated URLs, paths, file URLs, escaped Spotify URIs, next-field/system fallback, edited covers; no unsafe Spotify parser calls");
++    } @catch (NSException *exception) {
++        fprintf(stderr, "FAIL: local cover resolver raised %s: %s\n", exception.name.UTF8String, exception.reason.UTF8String);
++        return 1;
++    } @finally {
++        method_setImplementation(getter, original);
++        imp_removeBlock(replacement);
++    }
++    return 0;
++} }
 diff --git a/harness/playlist/build.sh b/harness/playlist/build.sh
 index 94411c6..3175289 100755
 --- a/harness/playlist/build.sh
@@ -226,17 +328,17 @@ index bcb0bb1..3b70eb6 100644
  
  UIViewController *SGAboutPage(void);   // the Mod page
 diff --git a/tweak/Sources/App/About/AboutSettings.m b/tweak/Sources/App/About/AboutSettings.m
-index cae8f5f..6998b5d 100644
+index 713d8ad..04e2ed2 100644
 --- a/tweak/Sources/App/About/AboutSettings.m
 +++ b/tweak/Sources/App/About/AboutSettings.m
-@@ -71,8 +71,6 @@ UIViewController *SGAboutPage(void) {
+@@ -89,8 +89,6 @@ UIViewController *SGAboutPage(void) {
          SGSection(nil, @[
              withSymbol(SGActionRow(@"Export settings", nil, ^{ SGExportSettings(); }), @"square.and.arrow.up"),
              withSymbol(SGActionRow(@"Import settings", nil, ^{ SGImportSettings(); }), @"square.and.arrow.down"),
 -            withSymbol(SGActionRow(@"Share diagnostics", @"For a bug report: versions, ad counts, this launch's log and Spotify's config. Song names can show.",
 -                                   ^{ SGShareDiagnostics(); }), @"stethoscope"),
          ]),
-         SGSection(nil, @[reset]),
+         SGSection(nil, @[clearKeys, reset]),
      ] footer:nil];
 diff --git a/tweak/Sources/App/About/Backup.m b/tweak/Sources/App/About/Backup.m
 index 082271a..fae0171 100644
@@ -381,18 +483,18 @@ index b62b752..7258401 100644
      if (!_about.hidden) {
          y += kAboutAbove;
 diff --git a/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x b/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
-index cd698f9..5c12d9a 100644
+index aab2438..4d48937 100644
 --- a/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
 +++ b/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
 @@ -43,6 +43,7 @@ static const CGFloat kMinHero = 120, kMinCover = 80;
  static char kCoverKey, kMetaKey, kPlayKey, kLayoutKey, kToolbarKey, kScrimKey, kBarScrimKey;
- static char kShuffleKey, kAddKey, kDownloadKey, kInfoKey, kBlockHeightKey, kBlockWatchedKey;
- static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey;
+ static char kShuffleKey, kAddKey, kDownloadKey, kPlainDownloadKey, kInfoKey, kBlockHeightKey, kBlockWatchedKey;
+ static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey, kTitleKey;
 +static char kIndependentActionsKey;
  
  #pragma mark - finding things
  
-@@ -310,23 +311,9 @@ static NSString *lengthIn(UIView *block) {
+@@ -314,19 +315,6 @@ static NSString *lengthIn(UIView *block) {
      return firstText(SGRFindByIdentifier(block, @"Components.Header.UI.Metadata", &kMetaKey), nil);
  }
  
@@ -409,26 +511,29 @@ index cd698f9..5c12d9a 100644
 -    return (SGRReadAddTo(save, &added) && added) || (SGRReadDownload(download, &state, NULL) && state != SGRDownloadNone);
 -}
 -
+ // The header of the songs the user liked by one artist: the playlist page's kit with no playlist behind it.
+ static BOOL isCollectionArtist(UIView *root) {
+     return [NSStringFromClass(SGRPlaylistHeaderOf(root).class) hasSuffix:@"CollectionArtistHeaderViewController"];
+@@ -342,9 +330,7 @@ static NSString *artistTitle(UIView *block) {
+ }
+ 
  // What the playlist's header shows: the name and the description from the page's model, the creator and the
 -// length from Spotify's concealed labels, and on Play's right save for someone else's playlist (download once
 -// it is saved, showsDownload), download for one's own and for Liked Songs, which Spotify reports as neither
 -// owned nor unsaved (isOwnedBySelf NO, formatListType liked-songs).
-+// length from Spotify's concealed labels. Save and download each keep their own button when both exist.
-+// One's own playlists and Liked Songs keep their existing row with download alone.
++// length from Spotify's concealed labels. Save and download keep independent controls where both exist.
  static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id model) {
-     NSString *title = modelString(model, @"playlistName") ?: firstText(block, nil);
-     [info showTitle:title creator:creatorIn(block) length:lengthIn(block)
-@@ -338,10 +325,20 @@ static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id mo
-     UIView *play = SGRFindByIdentifier(root, @"header-play-button", &kPlayKey);
-     UIView *save = own ? nil : SGRFindByIdentifier(block, @"Components.UI.AddToButton", &kAddKey);
-     UIView *download = SGRFindByIdentifier(block, @"DownloadButton.Granular*", &kDownloadKey);
+     BOOL artistPage = isCollectionArtist(root);
+     NSString *title = modelString(model, @"playlistName") ?: (artistPage ? artistTitle(block) : firstText(block, nil));
+@@ -359,10 +345,18 @@ static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id mo
+     // The Granular button of the playlist pages, or the plain one the songs liked by one artist have.
+     UIView *download = SGRFindByIdentifier(block, @"DownloadButton.Granular*", &kDownloadKey)
+         ?: SGRFindByIdentifier(block, @"Components.UI.DownloadButton", &kPlainDownloadKey);
 -    if (save && showsDownload(save, download)) save = nil;
 -    if (save) download = nil;
 -    [info showShuffle:shuffle play:play trailing:save ?: download
 -     trailingFallback:[UIImage systemImageNamed:save ? @"plus" : @"arrow.down"] playColor:SGRPlaylistFieldColor(info)];
-+    // The title and cover do not determine which actions a playlist supports. Whenever Spotify
-+    // supplies both save and download, give each its own glass button. Keep that row's layout
-+    // through transient model updates; a missing source hides only its own button.
++    // Keep the independent row through transient source updates, including generated mixes.
 +    BOOL independent = [objc_getAssociatedObject(info, &kIndependentActionsKey) boolValue];
 +    if (!independent && save && download) {
 +        independent = YES;
@@ -485,105 +590,3 @@ index 19130ed..1e6c5a9 100644
  }
  
  static UIImage *fromMetadata(NSDictionary *metadata) {
-diff --git a/harness/local-files/cover.m b/harness/local-files/cover.m
-new file mode 100644
-index 0000000..73f088f
---- /dev/null
-+++ b/harness/local-files/cover.m
-@@ -0,0 +1,96 @@
-+// Regression for Spotify 9.1.90's unchecked local-image URI parser. Exercise the
-+// actual fallback resolver with unrelated URLs, malformed URIs and valid covers.
-+#import <UIKit/UIKit.h>
-+#import <MediaPlayer/MediaPlayer.h>
-+#import <objc/runtime.h>
-+#import "Headers/SPTPlayer.h"
-+#import "Shared/LocalFiles/LocalFiles.h"
-+
-+#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAILED line %d: %s\n", __LINE__, #c); exit(1); } } while (0)
-+
-+static NSUInteger legacyCalls, sequence;
-+@interface NSURL (SGCrashFixture)
-+- (NSString *)spt_localFileImagePath;
-+@end
-+@implementation NSURL (SGCrashFixture)
-+- (NSString *)spt_localFileImagePath {
-+    legacyCalls++;
-+    NSArray *parts = [self.absoluteString componentsSeparatedByString:@":"];
-+    return [parts[2] stringByRemovingPercentEncoding];
-+}
-+@end
-+
-+@interface SGTestLocalTrack : NSObject
-+@property(nonatomic, strong) NSURL *URI;
-+@property(nonatomic, copy) NSDictionary *metadata;
-+@property(nonatomic, copy) NSString *trackTitle, *artistName;
-+@end
-+@implementation SGTestLocalTrack @end
-+@interface SGTestNowPlaying : NSObject
-+@property(nonatomic, copy) NSDictionary *nowPlayingInfo;
-+@end
-+@implementation SGTestNowPlaying @end
-+
-+NSString *SGURIString(id uri) {
-+    return [uri isKindOfClass:NSURL.class] ? [uri absoluteString] : uri;
-+}
-+static SGTestLocalTrack *track(NSDictionary *metadata) {
-+    SGTestLocalTrack *t = [SGTestLocalTrack new];
-+    t.URI = [NSURL URLWithString:[NSString stringWithFormat:@"spotify:local:Fixture:Album:Track%lu:60", (unsigned long)++sequence]];
-+    t.metadata = metadata; t.trackTitle = @"Cover fixture"; t.artistName = @"Fixture artist";
-+    return t;
-+}
-+static UIImage *resolve(SGTestLocalTrack *t) {
-+    return SGLocalFileFallbackCover((SPTPlayerTrack *)t);
-+}
-+int main(void) { @autoreleasepool {
-+    [NSUserDefaults.standardUserDefaults removeObjectForKey:SGKeyLocalFileEdits];
-+    SGTestNowPlaying *center = [SGTestNowPlaying new];
-+    Method getter = class_getClassMethod(MPNowPlayingInfoCenter.class, @selector(defaultCenter));
-+    IMP replacement = imp_implementationWithBlock(^id(id self) { return center; });
-+    IMP original = method_setImplementation(getter, replacement);
-+    @try {
-+        for (id address in @[@"cover.jpg", @"https://example.invalid/cover.jpg",
-+                [NSURL URLWithString:@"https://example.invalid/cover.jpg"],
-+                @"spotify:image:abc", @"spotify:localfileimage", @"spotify:localfileimage:",
-+                @"spotify:localfileimage:relative.jpg", @"spotify:localfileimage:/tmp/a:b.jpg",
-+                @42, NSNull.null]) {
-+            CHECK(!resolve(track(@{@"image_xlarge_url": address})));
-+        }
-+        UIImage *image = [[[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(4, 4)]
-+            imageWithActions:^(UIGraphicsImageRendererContext *context) {
-+                [UIColor.redColor setFill]; UIRectFill(CGRectMake(0, 0, 4, 4));
-+            }];
-+        NSString *file = [NSTemporaryDirectory() stringByAppendingPathComponent:@"local cover: artwork.png"];
-+        CHECK([UIImagePNGRepresentation(image) writeToFile:file atomically:YES]);
-+        for (id address in @[file, [NSURL fileURLWithPath:file], SGLocalFileCoverURL(file),
-+                [NSURL URLWithString:SGLocalFileCoverURL(file)], image]) {
-+            CHECK(resolve(track(@{@"image_xlarge_url": address})).CGImage);
-+        }
-+        CHECK(resolve(track(@{@"image_xlarge_url": @"cover.jpg", @"image_small_url": file})).CGImage);
-+        SGTestLocalTrack *fallback = track(@{@"image_url": @"cover.jpg"});
-+        center.nowPlayingInfo = @{MPMediaItemPropertyTitle: fallback.trackTitle,
-+            MPMediaItemPropertyArtist: fallback.artistName,
-+            MPMediaItemPropertyArtwork: [[MPMediaItemArtwork alloc] initWithBoundsSize:image.size
-+                requestHandler:^UIImage *(CGSize size) { return image; }]};
-+        CHECK(resolve(fallback).CGImage);
-+        center.nowPlayingInfo = nil;
-+        SGTestLocalTrack *edited = track(@{@"image_url": @"cover.jpg"});
-+        SGLocalFileSaveEdit(edited.URI.absoluteString, @{}, image, YES);
-+        CHECK(!resolve(edited));
-+        SGLocalFileSaveEdit(edited.URI.absoluteString, @{}, nil, NO);
-+        SGTestLocalTrack *remote = track(@{@"image_url": @"cover.jpg"});
-+        remote.URI = [NSURL URLWithString:@"spotify:track:4uLU6hMCjMI75M1A2tKUQC"];
-+        CHECK(!resolve(remote));
-+        CHECK(legacyCalls == 0);
-+        [NSFileManager.defaultManager removeItemAtPath:file error:nil];
-+        puts("PASS: local covers; malformed/unrelated URLs, paths, file URLs, escaped Spotify URIs, next-field/system fallback, edited covers; no unsafe Spotify parser calls");
-+    } @catch (NSException *exception) {
-+        fprintf(stderr, "FAIL: local cover resolver raised %s: %s\n", exception.name.UTF8String, exception.reason.UTF8String);
-+        return 1;
-+    } @finally {
-+        method_setImplementation(getter, original);
-+        imp_removeBlock(replacement);
-+    }
-+    return 0;
-+} }

@@ -1,4 +1,4 @@
-# Build Spotify 9.1.90 + Pixie
+# Build Spotify 9.1.90 + Pixie v1.2.1
 
 Requires macOS, full Xcode with an iOS 26+ SDK, Python 3, Theos, GNU make, ldid and dpkg. Follow Vitrine's own setup instructions for its build dependencies.
 
@@ -8,12 +8,12 @@ From this repository root:
 
 ```sh
 git clone https://github.com/My-Name-Is-Jeff/vitrine.git vitrine
-git -C vitrine checkout 914343731f66ccb2e639b8164a36be849a043276
+git -C vitrine checkout ebc1cbf6ee23a8ad839e60f04f3abf862f2ea85e
 git -C vitrine apply --check ../patches/vitrine-pixie.patch
 git -C vitrine apply ../patches/vitrine-pixie.patch
 ```
 
-The patch includes the redesigned album row, playlist/mix headers with independent Add and Download controls, their simulator fixtures and local build fixes. Original project files and notices remain upstream.
+This pins Vitrine **1.0.0-beta.14**. The patch includes the redesigned album row, playlist/mix headers with independent Add and Download controls, their simulator fixtures and local build fixes. Original project files and notices remain upstream.
 
 ## 2. Build the updated glass controls
 
@@ -29,13 +29,15 @@ codesign --force --sign - --timestamp=none /tmp/pixie-spotifyglass.dylib
 
 ## 3. Build Pixie into the base IPA
 
-Use your own **Vitrine 1.0.0-beta.13 / Spotify 9.1.90 IPA**, before Pixie has been applied. A plain Spotify IPA is not the input to this overlay builder.
+Use your own **Vitrine 1.0.0-beta.14 / Spotify 9.1.90 IPA**, before Pixie has been applied. A plain Spotify IPA is not the input to this overlay builder.
 
 ```sh
-python3 NativeDownloads/tools/build_vitrine_9190.py /path/to/Vitrine-9.1.90.ipa   --vitrine-dylib /tmp/pixie-spotifyglass.dylib
+python3 NativeDownloads/tools/build_vitrine_9190.py /path/to/Vitrine-b14-9.1.90.ipa \
+  --vitrine-dylib /tmp/pixie-spotifyglass.dylib \
+  --output NativeDownloads/outputs/pixie-9.1.90/Spotify-9.1.90-Vitrine-b14-Pixie-v1.2.1.ipa
 ```
 
-Output: `NativeDownloads/outputs/pixie-9.1.90/Spotify-9.1.90-Pixie.ipa`.
+Output: `NativeDownloads/outputs/pixie-9.1.90/Spotify-9.1.90-Vitrine-b14-Pixie-v1.2.1.ipa`.
 
 The builder compiles the companion library, validates guarded native patches, redirects the selected audio imports, normalizes the bundled Substrate dependency, signs the changed binaries ad hoc and checks archive integrity. The input IPA is not overwritten. Import/sign the output with your installation tool; packaging signatures are not a personal installation certificate.
 
@@ -43,11 +45,15 @@ The builder compiles the companion library, validates guarded native patches, re
 
 `NativeDownloads/tests/` contains the component fixtures used during development. The redesigned album and playlist fixtures are included in the upstream patch (`harness/album/` and `harness/playlist/`, with `verify-actions` mode). Fixtures alone do not prove device downloading or offline playback.
 
-Release builds set `SAP_ENABLE_WAV_CAPTURE=0`. Encoded audio cache/export code remains a disabled research prototype; it is not a supported export feature. No account credentials, device logs, signing material or Spotify executable are included.
+WAV capture and its implementation have been removed. Encoded audio cache/export code remains a disabled research prototype; it is not a supported export feature. No account credentials, device logs, signing material or Spotify executable are included.
+
+**Regular IPA version: tested through LiveContainer and SideStore.**
+
+**Jailbreak version: NOT TESTED on a jailbroken device.**
 
 ## Jailbreak packages (rootless / rootful)
 
-**The published DEBs remain the previous release.** This v1.2 source update targets the IPA diagnostics/device-management changes; it does not rebuild or revalidate jailbreak execution. To reproduce the existing DEBs, use tag `pixie-9.1.90-jailbreak-1` rather than current `main`.
+**The published DEBs remain the previous release.** This v1.2.1 source update does not rebuild or revalidate jailbreak execution. To reproduce the existing DEBs, use tag `pixie-9.1.90-jailbreak-1` rather than current `main`.
 
 These packages are for an original Spotify 9.1.90 installation on a jailbroken device. Install **one** package matching the jailbreak layout, then restart Spotify. Do not install on top of an IPA with Vitrine/Pixie already injected.
 
@@ -64,4 +70,4 @@ The source symlink supplies the expected Vitrine source path; Theos must include
 
 Outputs: `NativeDownloads/outputs/pixie-9.1.90-deb/`, with rootless (`iphoneos-arm64`, `/var/jb`) and rootful (`iphoneos-arm`) DEBs. Both require a compatible Substrate hook provider. The package contains Vitrine and Pixie together; do not install a second Vitrine tweak alongside it.
 
-**Device status:** the regular IPA has been tested via LiveContainer and SideStore. Jailbreak execution is **not tested**. Local package checks and the 12-case patch-engine fixture are not a substitute for a jailbroken-device test. The IPA-only Live Activity / App Intents extension is not included in the DEB.
+Local package checks and the 12-case patch-engine fixture are not a substitute for a jailbroken-device test. The IPA-only Live Activity / App Intents extension is not included in the DEB.

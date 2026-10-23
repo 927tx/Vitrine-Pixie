@@ -11,6 +11,7 @@
 #import "KeyModePolicy.h"
 #import "DiagnosticTrace.h"
 #import "NativeTracePatch.h"
+#import "NativeSetupStatus.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -162,7 +163,7 @@ NSDictionary *SAPKeyRequestModeReport(void) {
              @"restart_required":@NO,
              @"compatibility_check":SAPDownloadCompatibilityReport(),
              @"detail":restoreZero?@"The verified selector returned 1. Restoring mode 0 is available. Download authorization is separate.":
-                 (kind==0?@"Mode 0 is verified in the executable. This status does not confirm download authorization.":kind==1?@"Mode 1 is verified in this executable. Install the mode-0 version to change it; runtime changes are unavailable.":kind==2&&symbolMatches?@"Only restoring a confirmed mode 1 to mode 0 is allowed. A saved preference alone is not confirmation.":@"The installed request mode cannot be verified. Changes are disabled.")};
+                 (kind==0?@"Mode 0 is verified in the executable. This status does not confirm download authorization.":kind==1?@"Mode 1 is verified in the executable. This status does not confirm download authorization.":kind==2&&symbolMatches?@"Only restoring a confirmed mode 1 to mode 0 is allowed. A saved preference alone is not confirmation.":@"The installed request mode cannot be verified. Changes are disabled.")};
 }
 void SAPSetKeyRequestMode(NSInteger mode,void (^completion)(BOOL,NSString *)) {
     if(!NSThread.isMainThread){dispatch_async(dispatch_get_main_queue(),^{SAPSetKeyRequestMode(mode,completion);});return;}
@@ -223,6 +224,8 @@ static BOOL nativeState(id wrapper,void **manager,uintptr_t *image,NSMutableDict
     out[@"restriction_guard_active"]=@(guarded);
     int modeKind=keyModeKind(*image);
     out[@"key_mode_runtime_selectable"]=@(modeKind==2);
+    out[@"key_mode_selector_binding_verified"]=@(modeKind==2 &&
+        dlsym(RTLD_DEFAULT,"SAPCurrentKeyRequestMode")== (void *)&SAPCurrentKeyRequestMode);
     out[@"configured_key_request_mode"]=@(modeKind==2?configuredKeyMode():modeKind);
     out[@"offline_key_request_mode"]=out[@"configured_key_request_mode"];
     // Widened to also cover +0x2b0/+0x2b4: the live reservation counters the slot-reserving
@@ -283,6 +286,10 @@ static BOOL methodSignature(Class cls,SEL sel,unsigned arguments,char returns,Me
     char type[16];method_getReturnType(*out,type,sizeof(type));return type[0]==returns;
 }
 void SAPInstallNativeOffline(void) {
+#if SAP_JAILBREAK
+    extern NSDictionary *SAPJailbreakSupportReport(void);
+    if(![SAPJailbreakSupportReport()[@"native_patches_ready"]boolValue])return;
+#endif
     static dispatch_once_t once;
     dispatch_once(&once,^{
         NSInteger saved=[NSUserDefaults.standardUserDefaults integerForKey:keyModePreference];
@@ -425,16 +432,13 @@ void SAPPrepareNativeOffline(BOOL (^stillRequested)(void),void (^completion)(BOO
         }
         NSMutableDictionary *after=[NSMutableDictionary dictionary];
         BOOL stateValid=nativeState(wrapper,&manager,&image,after);
-        BOOL quotaReady=stateValid&&[after[@"music_limit"] intValue]>=desiredTrackLimit&&[after[@"music_duration_seconds"] longLongValue]>=desiredDurationSeconds;
-        BOOL patchReady=[after[@"restriction_guard_active"]boolValue] &&
-            ([after[@"key_mode_runtime_selectable"]boolValue] || [after[@"offline_key_request_mode"]intValue]==0);
-        BOOL ready=quotaReady&&patchReady;
-        after[@"quota_ready"]=@(quotaReady);after[@"local_patches_verified"]=@(patchReady);
+        NSDictionary *assessment=SAPAssessNativeSetup(after,stateValid);
+        [after addEntriesFromDictionary:assessment];
+        BOOL ready=[assessment[@"local_prepared"]boolValue];
         BOOL valuesChanged=![[before objectForKey:@"music_limit"]isEqual:[after objectForKey:@"music_limit"]] ||
             ![[before objectForKey:@"music_duration_seconds"]isEqual:[after objectForKey:@"music_duration_seconds"]];
         after[@"quota_setter_invoked"]=@(changed);after[@"quota_values_changed"]=@(valuesChanged);
-        [operation finish:ready reason:ready?@"Local settings prepared; device licenses and download authorization have not been checked.":
-            @"Local download setup is incomplete: verify the installed Spotify executable and quota patch." report:
+        [operation finish:ready reason:ready?assessment[@"reason"]:[assessment[@"reason"] stringByAppendingString:@"\nNo download request was sent."] report:
             @{@"before":before,@"after":after,@"changed":@(valuesChanged),@"setter_invoked":@(changed),@"native_queue":@YES}];
     });
 }
@@ -457,6 +461,7 @@ void SAPReadNativeOfflineQuota(void (^completion)(NSDictionary *)) {
     ((void(*)(id,SEL,id))objc_msgSend)(scheduler,post,^{
         NSMutableDictionary *result=[NSMutableDictionary dictionary];void *manager=NULL;uintptr_t image=0;
         BOOL valid=wrapper==nativeWrapper && nativeState(wrapper,&manager,&image,result);
+        [result addEntriesFromDictionary:SAPAssessNativeSetup(result,valid)];
         result[@"read_status"]=valid?@"received":@"invalid";
         result[@"observed_at"]=@(NSDate.date.timeIntervalSince1970);result[@"read_only"]=@YES;
         if(!valid)result[@"error"]=@"Native manager identity or state could not be verified";
@@ -486,13 +491,8 @@ void SAPSampleNativeOffline(void) {
     ((void(*)(id,SEL,id))objc_msgSend)(scheduler,post,^{
         void *manager=NULL;uintptr_t image=0;NSMutableDictionary *value=[NSMutableDictionary dictionary];
         BOOL valid=nativeState(wrapper,&manager,&image,value);value[@"valid"]=@(valid);
-        BOOL quotaReady=valid && [value[@"music_limit"]intValue]>=SAPMinimumTrackLimit &&
-            [value[@"music_duration_seconds"]longLongValue]>=SAPMinimumMusicDurationSeconds;
-        BOOL patchReady=[value[@"restriction_guard_active"]boolValue] &&
-            ([value[@"key_mode_runtime_selectable"]boolValue] || [value[@"offline_key_request_mode"]intValue]==0);
-        value[@"quota_ready"]=@(quotaReady);value[@"local_patches_verified"]=@(patchReady);
-        value[@"local_prepared"]=@(quotaReady&&patchReady);value[@"authorization_checked"]=@NO;
-        value[@"reason"]=@"read-only local setup sample; track-key authorization unverified";
+        [value addEntriesFromDictionary:SAPAssessNativeSetup(value,valid)];
+        value[@"sample_source"]=@"read_only_native_manager";
         SAPJournalNoteQuota(value);
     });
 }

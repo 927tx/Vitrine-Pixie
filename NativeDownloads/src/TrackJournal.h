@@ -51,6 +51,7 @@ NSURL *SAPJournalWriteTableSnapshot(NSDictionary *report);
 NSURL *SAPJournalWriteReport(void);
 NSURL *SAPJournalWriteTable(void);
 void SAPJournalReset(void);
+BOOL SAPJournalResetLogFiles(NSError **error);
 #ifdef SAP_TESTING
 void SAPJournalDrainForTesting(void);
 void SAPJournalTimeoutsForTesting(void);

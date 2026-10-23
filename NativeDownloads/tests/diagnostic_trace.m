@@ -15,6 +15,13 @@ static NSUInteger count(NSArray *events,NSString *category,NSString *stage) {
 }
 @interface FakeEndpoint : NSObject @end
 @implementation FakeEndpoint @end
+@interface InspectionData:NSData
+@property(nonatomic) NSUInteger inspections;
+@end
+@implementation InspectionData
+- (NSUInteger)length {self.inspections++;return 0;}
+- (const void *)bytes {self.inspections++;return NULL;}
+@end
 @interface FakeTraceLifetime:NSObject
 @property(nonatomic) NSUInteger acquisitions,cancellations;
 - (void)acquire;
@@ -38,7 +45,32 @@ int main(int argc,const char **argv){@autoreleasepool{
     assert(!SAPTraceIsActive()&&![SAPTraceReport()[@"initialized"]boolValue]);
     SAP_TRACE("test","must_not_exist",0,@{@"value":@1});assert(SAPTraceRPCBegin(@"service",@"method",NSData.data,@"test",FakeEndpoint.new,NO)==nil);
     assert(![SAPTraceReport()[@"initialized"]boolValue]);
+    if([scenario isEqual:@"off_reset"]){
+        [@"old history"writeToURL:[directory URLByAppendingPathComponent:@"PixieTrace.jsonl"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSError *error=nil;assert(SAPTraceReset(&error)&&!error&&!SAPTraceIsActive()&&![SAPTraceReport()[@"initialized"]boolValue]);
+        assert(![NSFileManager.defaultManager fileExistsAtPath:[directory URLByAppendingPathComponent:@"PixieTrace.jsonl"].path]);
+        __block NSUInteger evaluations=0;SAP_TRACE("test","off",0,@{@"value":@(evaluations++)});assert(evaluations==0);
+        puts("PASS reset while OFF deletes old files without enabling or creating the trace queue");return 0;
+    }
     SAPTraceSetEnabled(true,"test_start");
+    if([scenario isEqual:@"reset"]){
+        uint64_t oldSegment=SAPTraceGeneration();
+        SAPTraceRPC *old=SAPTraceRPCBegin(@"old.service",@"Subscribe",NSData.data,@"test",FakeEndpoint.new,YES);
+        for(unsigned i=0;i<100;i++)SAP_TRACE("test","old_history",0,@{@"i":@(i)});
+        NSError *error=nil;assert(SAPTraceReset(&error)&&!error&&SAPTraceIsActive());
+        SAPTraceRPCReply(old,NSData.data);SAP_TRACE("test","fresh_history",0,@{@"fresh":@YES});SAPTraceTestDrain();
+        NSArray *fresh=SAPTraceExport()[@"events"];assert(fresh.count==2&&count(fresh,@"session",@"log_reset")==1&&count(fresh,@"test",@"fresh_history")==1);
+        for(NSDictionary *event in fresh)assert([event[@"segment"]unsignedLongLongValue]>oldSegment);
+        SAPTraceSetEnabled(false,"test_end");SAPTraceTestDrain();assert(SAPTraceReset(&error)&&!SAPTraceIsActive());
+        assert([NSFileManager.defaultManager contentsOfDirectoryAtURL:directory includingPropertiesForKeys:nil options:0 error:nil].count==0);
+        SAPTraceSetEnabled(true,"before_concurrent_toggle");
+        SAPTraceTestSetResetObserver(^{SAPTraceSetEnabled(false,"user_disabled_during_reset");});
+        assert(SAPTraceReset(&error)&&!SAPTraceIsActive());
+        SAPTraceTestSetResetObserver(^{SAPTraceSetEnabled(true,"user_enabled_during_reset");});
+        assert(SAPTraceReset(&error)&&SAPTraceIsActive());
+        SAPTraceTestSetResetObserver(nil);SAPTraceSetEnabled(false,"end");SAPTraceTestDrain();
+        puts("PASS reset clears retained/in-flight history and RPC wrappers; old callbacks cannot reappear; ON/OFF state preserved");return 0;
+    }
     if([scenario isEqual:@"rotation"]||[scenario isEqual:@"loss"]||[scenario isEqual:@"write_error"]){
         for(NSUInteger i=0;i<300;i++)SAP_TRACE("test","burst",0,@{@"index":@(i),@"padding":[@"x"stringByPaddingToLength:512 withString:@"x" startingAtIndex:0]});
         SAPTraceTestDrain();NSDictionary *r=SAPTraceReport();
@@ -112,7 +144,9 @@ int main(int argc,const char **argv){@autoreleasepool{
     NSString *json=[[NSString alloc]initWithData:[NSJSONSerialization dataWithJSONObject:export options:0 error:nil] encoding:NSUTF8StringEncoding];
     assert(![json containsString:@"HIDDEN_TOKEN"] && ![json containsString:@"HIDDEN_KEY"] && ![json containsString:@"HIDDEN_PAYLOAD"]);
     SAPTraceSetEnabled(false,"test_end");SAPTraceTestDrain();uint64_t before=[SAPTraceReport()[@"captured_events"]unsignedLongLongValue];
-    SAP_TRACE("test","off",0,@{@"value":@0});SAPTraceRPCReply(stream,NSData.data);SAPTraceTestDrain();assert([SAPTraceReport()[@"captured_events"]unsignedLongLongValue]==before && [SAPTraceReport()[@"rpc_slots_in_use"]unsignedIntValue]==0);
+    InspectionData *offData=[InspectionData new];
+    SAP_TRACE("test","off",0,@{@"value":@0});SAPTraceRPCReply(stream,offData);assert(offData.inspections==0);
+    SAPTraceTestDrain();assert([SAPTraceReport()[@"captured_events"]unsignedLongLongValue]==before && [SAPTraceReport()[@"rpc_slots_in_use"]unsignedIntValue]==0);
     for(unsigned i=0;i<6;i++){SAPTraceSetEnabled(true,"rapid_on");SAPTraceRPCBegin(@"test",@"Subscribe",NSData.data,@"test",endpoint,YES);SAPTraceSetEnabled(false,"rapid_off");}
     SAPTraceSetEnabled(true,"last_segment");
     SAPTraceRPC *last=SAPTraceRPCBegin(@"test",@"Subscribe",NSData.data,@"test",endpoint,YES);

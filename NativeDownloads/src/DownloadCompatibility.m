@@ -16,6 +16,8 @@ static NSUInteger remaining;
 static SAPTraceID traceOperation;
 static NSString *const offlineService=@"spotify.offline_esperanto.proto.Offline";
 static NSDictionary *deviceFields(NSArray *fields) {
+    NSString *identifier=SAPProtoString(fields,1),*cache=SAPProtoString(fields,2);
+    if(!identifier.length||!cache.length||identifier.length>512||cache.length>512)return nil;
     return @{@"device_id":SAPProtoString(fields,1)?:@"",@"cache_id":SAPProtoString(fields,2)?:@"",
         @"name":SAPProtoString(fields,3)?:@"",@"type":@(SAPProtoNumber(fields,4,0)),
         @"platform":@(SAPProtoNumber(fields,5,0)),@"is_local":@(SAPProtoNumber(fields,7,0)!=0),
@@ -108,16 +110,26 @@ void SAPRefreshDownloadCompatibility(void (^completion)(NSDictionary *)) {
             NSMutableDictionary *value=[@{@"method":method,@"observed_at":@(NSDate.date.timeIntervalSince1970),
                 @"read_status":fields?@"received":@"failed",@"response_bytes":@(data.length)}mutableCopy];
             if(data)value[@"response_base64"]=[data base64EncodedStringWithOptions:0];
-            if(!fields)value[@"error"]=error?:@"Invalid protobuf response";
+            if(!fields) {
+                value[@"error"]=error?:@"Invalid protobuf response";
+                if([error localizedCaseInsensitiveContainsString:@"timeout"]||[error localizedCaseInsensitiveContainsString:@"timed out"])value[@"read_status"]=@"timeout";
+                else if([error localizedCaseInsensitiveContainsString:@"unavailable"]||[error localizedCaseInsensitiveContainsString:@"not prepared"])value[@"read_status"]=@"unavailable";
+            }
             else if([name isEqual:@"licenses"]) {
                 value[@"max_licenses"]=@((int32_t)SAPProtoNumber(fields,1,0));value[@"free_licenses"]=@((int32_t)SAPProtoNumber(fields,2,0));value[@"error"]=@(SAPProtoNumber(fields,3,0));
             }else if([name isEqual:@"playback"])value[@"allowed"]=@(SAPProtoNumber(fields,1,0)!=0);
             else if([name isEqual:@"preflight"]) {value[@"has_sufficient_storage"]=@(SAPProtoNumber(fields,5,0)!=0);value[@"downloads_in_progress"]=@(SAPProtoNumber(fields,6,0));}
-            else if([name isEqual:@"local_device"])value[@"device"]=deviceFields(fields);
+            else if([name isEqual:@"local_device"]) {
+                NSDictionary *device=deviceFields(fields);
+                if(device)value[@"device"]=device;
+                else {value[@"read_status"]=@"invalid_response";value[@"error"]=@"GetLocalDevice did not return a valid exact device_id and cache_id. Play one track online on this device, then refresh.";}
+            }
             else if([name isEqual:@"devices"]) {
                 NSMutableArray *devices=[NSMutableArray array];
                 for(NSDictionary *field in fields)if([field[@"number"]unsignedIntValue]==1 && [field[@"wire"]unsignedIntValue]==2) {
-                    NSArray *device=SAPProtoFields(field[@"value"]);if(device)[devices addObject:deviceFields(device)];
+                    NSArray *fields=SAPProtoFields(field[@"value"]);NSDictionary *device=deviceFields(fields);
+                    if(device)[devices addObject:device];
+                    else {value[@"read_status"]=@"invalid_response";value[@"error_detail"]=@"GetDevices returned an invalid exact identity.";}
                 }
                 value[@"devices"]=devices;value[@"error"]=@(SAPProtoNumber(fields,2,0));
             }else if([name isEqual:@"license_info"]) {

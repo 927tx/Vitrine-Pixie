@@ -23,19 +23,16 @@ def run(*args):
     subprocess.run([str(x) for x in args], check=True)
 
 
-flags = ["xcrun", "clang", "-arch", "arm64", "-std=gnu11", "-O1", "-g", "-Isrc", "-DSAP_ENABLE_WAV_CAPTURE=1", "-framework", "AudioToolbox", "-framework", "Foundation"]
-run(*flags, "-DSAP_TESTING", "-fsanitize=address,undefined", "src/AudioProbe.c", "src/CaptureRing.c", "tests/test_probe.c", "src/Diagnostics.m", "src/Localization.m", "-o", build / "test_probe")
+flags = ["xcrun", "clang", "-arch", "arm64", "-std=gnu11", "-O1", "-g", "-Isrc", "-framework", "AudioToolbox", "-framework", "Foundation"]
+run(*flags, "-fobjc-arc", "-fsanitize=address,undefined", "tests/process_scope.m", "-o", build / "process_scope")
+run(build / "process_scope")
+run(*flags, "-fobjc-arc", "-fsanitize=address,undefined", "tests/native_setup_status.m", "-o", build / "native_setup_status")
+run(build / "native_setup_status")
+run(*flags, "-DSAP_TESTING", "-fsanitize=address,undefined", "src/AudioProbe.c", "tests/test_probe.c", "src/Diagnostics.m", "src/Localization.m", "-o", build / "test_probe")
 run(build / "test_probe")
-release_flags = [x for x in flags if x != "-DSAP_ENABLE_WAV_CAPTURE=1"]
-run(*release_flags, "-DSAP_ENABLE_WAV_CAPTURE=0", "-DSAP_TESTING", "-fsanitize=address,undefined",
-    "src/AudioProbe.c", "src/CaptureRing.c", "tests/capture_disabled.c", "src/Diagnostics.m", "src/Localization.m", "-o", build / "capture_disabled")
-run(build / "capture_disabled")
-symbols = subprocess.check_output(["nm", "-a", str(build / "capture_disabled")], text=True)
-assert not any(line.split()[-1] in {"_samples", "_writeIndex", "_captureFormat"} for line in symbols.splitlines() if line.split())
-print("PASS: no WAV sample ring or capture state in release binary")
 frameworks = build / "Frameworks"
 frameworks.mkdir(exist_ok=True)
-run(*flags, "-dynamiclib", "-fvisibility=hidden", "src/AudioProbe.c", "src/CaptureRing.c", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "src/Diagnostics.m", "src/Localization.m", "-o", frameworks / "SpotifyAudioProbe.dylib")
+run(*flags, "-dynamiclib", "-fvisibility=hidden", "src/AudioProbe.c", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "src/Diagnostics.m", "src/Localization.m", "-o", frameworks / "SpotifyAudioProbe.dylib")
 run(*flags, "tests/offline_unit.c", "-Wl,-headerpad,0x1000", "-o", build / "offline-original")
 data, manifest = patch((build / "offline-original").read_bytes())
 patched = build / "offline-patched"
@@ -45,7 +42,7 @@ run("xcrun", "dyld_info", "-validate_only", patched)
 run(patched)
 print("PASS: all five import ordinals redirected and runnable on the host")
 
-run(*flags, "-fobjc-arc", "-fsanitize=address,undefined", "src/AudioProbe.c", "src/CaptureRing.c",
+run(*flags, "-fobjc-arc", "-fsanitize=address,undefined", "src/AudioProbe.c",
     "src/AVAudioHooks.m", "tests/av_hooks.m", "-framework", "AVFoundation", "-framework", "CoreMedia",
     "-framework", "Foundation", "src/Diagnostics.m", "src/Localization.m", "-o", build / "av_hooks")
 run(build / "av_hooks")
@@ -118,6 +115,6 @@ run(build/"key_mode_policy")
 run("xcrun","clang","-fobjc-arc","-std=gnu11","-Isrc","-DSAP_TESTING",
     "-fsanitize=address,undefined","src/DiagnosticTrace.m","src/NativeKeyTrace.m","src/WireProto.m",
     "tests/diagnostic_trace.m","-framework","Foundation","-o",build/"diagnostic_trace")
-for scenario in ["normal","rotation","loss","write_error"]:
+for scenario in ["normal","rotation","loss","write_error","reset","off_reset"]:
     run(build/"diagnostic_trace",scenario)
 run(sys.executable,ROOT/"tests/native_trace_patch.py")
