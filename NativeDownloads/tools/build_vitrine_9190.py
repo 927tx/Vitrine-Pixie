@@ -12,11 +12,12 @@ from patch_imports import patch as patch_audio_imports
 from patch_native_restrictions import patch as patch_limits, guard_header, limits_header, layout
 from patch_key_request_mode import patch as patch_key_mode, key_header
 from patch_native_trace import patch as patch_native_trace,header as native_trace_header
+from fix_sideload_dependencies import pin_substrate_dependency, SUBSTRATE
 
 ROOT = Path(__file__).resolve().parents[1]
 UUID = bytes.fromhex("fbce22c17e1b3e0d9be866ff9291943e")
 SOURCE_FILES = [
-    "AudioProbe.c", "Diagnostics.m", "Localization.m", "CaptureRing.c",
+    "AudioProbe.c", "Diagnostics.m", "Localization.m",
     "AVAudioHooks.m", "SourceGraph.c", "OfflineFlags.m", "WireProto.m",
     "OfflineConfig.m", "TrackJournal.m", "NativeErrorLog.m", "PlayerTrace.m",
     "NativeOffline.m", "TrackDownload.m", "AudioProbeUI.m", "DownloadSettingsUI.m",
@@ -66,6 +67,9 @@ def main():
             raise RuntimeError("Unsupported Spotify 9.1.90 executable UUID")
         if "Payload/Spotify.app/Frameworks/spotifyglass.dylib" not in archive.namelist():
             raise RuntimeError("Expected Vitrine's spotifyglass.dylib")
+        if SUBSTRATE not in archive.namelist() or not archive.read(SUBSTRATE):
+            raise RuntimeError("Required embedded CydiaSubstrate executable is missing")
+        vitrine_bytes = vitrine.read_bytes() if vitrine else archive.read("Payload/Spotify.app/Frameworks/spotifyglass.dylib")
 
     patched, audio = patch_audio_imports(native)
     patched, limits = patch_limits(patched)
@@ -77,26 +81,21 @@ def main():
     sdk = subprocess.check_output(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], text=True).strip()
     with tempfile.TemporaryDirectory(prefix="vitrine-9190-") as temporary:
         temporary = Path(temporary)
-        if vitrine:
-            staged_vitrine = temporary / "spotifyglass.dylib"
-            staged_vitrine.write_bytes(vitrine.read_bytes())
-            # Theos links this manual hook to its jailbreak framework path.
-            # The supplied sideload IPA already bundles the same framework.
-            dependencies = subprocess.check_output(["otool", "-L", str(staged_vitrine)], text=True)
-            substrate = "/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate"
-            if substrate in dependencies:
-                run("install_name_tool", "-change", substrate,
-                    "@rpath/CydiaSubstrate.framework/CydiaSubstrate", staged_vitrine)
-            run("codesign", "--force", "--sign", "-", "--timestamp=none", staged_vitrine)
-            run("codesign", "--verify", "--strict", staged_vitrine)
-            run("xcrun", "dyld_info", "-validate_only", staged_vitrine)
-            vitrine = staged_vitrine
+        staged_vitrine = temporary / "spotifyglass.dylib"
+        staged_vitrine.write_bytes(vitrine_bytes)
+        # Bind the embedded framework directly; signer changes to the main rpaths
+        # must not affect a dependency beside this dylib.
+        substrate_dependency = pin_substrate_dependency(staged_vitrine)
+        run("codesign", "--force", "--sign", "-", "--timestamp=none", staged_vitrine)
+        run("codesign", "--verify", "--strict", staged_vitrine)
+        run("xcrun", "dyld_info", "-validate_only", staged_vitrine)
+        vitrine = staged_vitrine
         companion = temporary / "SpotifyAudioProbe.dylib"
         run("xcrun", "clang", "-dynamiclib", "-arch", "arm64", "-target", "arm64-apple-ios15.0",
             "-isysroot", sdk, "-fobjc-arc", "-std=gnu11", "-O2", "-fvisibility=hidden",
             "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-nullability-completeness",
             "-Werror=implicit-function-declaration", "-I" + str(ROOT / "src"),
-            "-DSAP_ENABLE_WAV_CAPTURE=0", *(ROOT / "src" / name for name in SOURCE_FILES),
+            *(ROOT / "src" / name for name in SOURCE_FILES),
             "-framework", "AudioToolbox", "-framework", "Foundation", "-framework", "UIKit",
             "-framework", "AVFAudio", "-framework", "CoreGraphics", "-framework", "AVFoundation",
             "-framework", "CoreMedia", "-framework", "Network", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "-o", companion)
@@ -122,7 +121,8 @@ def main():
             raise RuntimeError("IPA ZIP integrity check failed")
     print(json.dumps({"output": str(output), "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
                       "spotify_uuid": UUID.hex(), "audio_imports": audio,
-                      "native_limits": limits, "key_request_mode": key, "native_observation": native_trace}, indent=2))
+                      "native_limits": limits, "key_request_mode": key, "native_observation": native_trace,
+                      "embedded_substrate_dependency": substrate_dependency}, indent=2))
 
 
 if __name__ == "__main__":

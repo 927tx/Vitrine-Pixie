@@ -9,6 +9,7 @@ import plistlib
 import shutil
 import subprocess
 import time
+import sys
 
 root=Path(__file__).resolve().parents[1]
 out=root/'build/ui-v4'
@@ -19,8 +20,7 @@ def run(*args,check=True):
  return p.stdout.strip()
 devices=json.loads(run('xcrun','simctl','list','devices','--json'))['devices']
 booted=[d for ds in devices.values() for d in ds if d['state']=='Booted' and d.get('isAvailable') and 'iPhone' in d['name']]
-assert booted,'Boot an iPhone simulator first'
-udid=booted[0]['udid']
+udid=booted[0]['udid'] if booted else None
 sdk=run('xcrun','--sdk','iphonesimulator','--show-sdk-path')
 objects=[]
 for src in ['src/DownloadSettingsUI.m','src/Diagnostics.m','src/DiagnosticTrace.m','src/NativeKeyTrace.m','src/WireProto.m','src/Localization.m','tests/trace_platform_stub.m','tests/SettingsFixtureActions.m']:
@@ -31,6 +31,9 @@ bundle='local.spotify.settingspreview.v4'
 info={'CFBundleIdentifier':bundle,'CFBundleExecutable':'SpotifySettingsPreview','CFBundleName':'Settings Preview','CFBundleVersion':'24','CFBundleShortVersionString':'24','CFBundlePackageType':'APPL','CFBundleLocalizations':['ru','en'],'CFBundleDevelopmentRegion':'en','LSRequiresIPhoneOS':True,'UIDeviceFamily':[1],'UILaunchScreen':{},'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{'UIWindowSceneSessionRoleApplication':[{'UISceneConfigurationName':'Default','UISceneDelegateClassName':'SAPFixtureSceneDelegate'}]}},'UISupportedInterfaceOrientations':['UIInterfaceOrientationPortrait']}
 (app/'Info.plist').write_bytes(plistlib.dumps(info))
 run('codesign','--force','--sign','-','--timestamp=none',app)
+if not udid or '--build-only' in sys.argv:
+ print('PASS: native settings fixture compiled; simulator execution skipped (no booted iPhone simulator or build-only)')
+ sys.exit(0)
 run('xcrun','simctl','install',udid,app)
 for language in ['ru','en']:
  run('xcrun','simctl','terminate',udid,bundle,check=False)

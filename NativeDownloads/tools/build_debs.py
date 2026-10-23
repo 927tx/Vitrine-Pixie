@@ -7,6 +7,7 @@ to Spotify, account material, or bundled copy of the hook framework.
 import argparse
 import hashlib
 import json
+import plistlib
 from pathlib import Path
 import shutil
 import struct
@@ -16,6 +17,7 @@ from zipfile import ZipFile
 from build_vitrine_9190 import SOURCE_FILES
 import patch_native_restrictions as quota
 import patch_key_request_mode as key
+import patch_native_trace as trace
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT.parent
@@ -26,12 +28,17 @@ def run(*args):
 def generate_header(folder):
     folder.mkdir(parents=True, exist_ok=True)
     patched = bytearray(key.ORIGINAL)
-    struct.pack_into('<I', patched, key.CALL_SITE - key.WINDOW, 0x52800002)
+    struct.pack_into('<I', patched, key.CALL_SITE - key.WINDOW, quota.branch(key.CALL_SITE,key.CAVE))
+    static_mode_zero = bytearray(key.ORIGINAL)
+    struct.pack_into('<I', static_mode_zero, key.CALL_SITE - key.WINDOW, 0x52800002)
     arrays = {'SupportedUUID': quota.UUID, 'SetterOriginal': quota.ORIGINAL,
-              'KeyOriginal': key.ORIGINAL, 'KeyPatched': patched,
-              'ProviderOriginal': key.PROVIDER_HEAD, 'MappingOriginal': key.MAPPING_BYTES}
+              'KeyOriginal': key.ORIGINAL, 'KeyPatched': patched, 'KeyStaticZero': static_mode_zero,
+              'ProviderOriginal': key.PROVIDER_HEAD, 'MappingOriginal': key.MAPPING_BYTES,
+              'DLSymStubOriginal': key.DLSYM_STUB_HEAD,
+              'SuccessOriginal': trace.POINTS[1][3], 'FailureOriginal': trace.POINTS[2][3]}
     offsets = {'SetterOffset': quota.SETTER, 'KeyWindowOffset': key.WINDOW,
-               'KeyCallOffset': key.CALL_SITE, 'ProviderOffset': key.PROVIDER, 'MappingOffset': key.MAPPING}
+               'KeyCallOffset': key.CALL_SITE, 'ProviderOffset': key.PROVIDER,
+               'MappingOffset': key.MAPPING, 'DLSymStubOffset': key.DLSYM_STUB}
     text = '#pragma once\n#include <stdint.h>\n'
     for name, value in arrays.items():
         text += f'static const uint8_t SAPJB{name}[]={{' + ','.join(f'0x{b:02x}' for b in value) + '};\n'
@@ -65,12 +72,16 @@ def main():
     parser.add_argument('ipa', type=Path, help='Original decrypted Vitrine Spotify 9.1.90 IPA')
     parser.add_argument('--vitrine-dylib', required=True, type=Path)
     parser.add_argument('--theos', type=Path, default=PROJECT / '.build-tools/theos')
-    parser.add_argument('--output', type=Path, default=ROOT / 'outputs/pixie-9.1.90-deb')
+    parser.add_argument('--output', type=Path, default=ROOT / 'outputs/pixie-9.1.90-v1.2-deb')
     args = parser.parse_args()
     build = ROOT / 'build/deb'
     generate_header(build)
     if (ROOT / 'src/NativeRestrictionsPatch.h').read_text() != quota.guard_header():
         raise RuntimeError('Native quota guard header is out of sync')
+    if (ROOT / 'src/NativeTracePatch.h').read_text() != trace.header():
+        raise RuntimeError('Native trace header is out of sync')
+    if (ROOT / 'src/NativeKeyModePatch.h').read_text() != key.key_header():
+        raise RuntimeError('Native key-mode header is out of sync')
     with ZipFile(args.ipa) as archive:
         original = archive.read('Payload/Spotify.app/Spotify')
     quota.patch(original)
@@ -93,7 +104,7 @@ def main():
         run('xcrun', 'clang', '-dynamiclib', '-arch', 'arm64', '-target', 'arm64-apple-ios16.1',
             '-isysroot', sdk, '-fobjc-arc', '-std=gnu11', '-O2', '-fvisibility=hidden',
             '-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-nullability-completeness',
-            '-Werror=implicit-function-declaration', '-DSAP_ENABLE_WAV_CAPTURE=0', '-DSAP_JAILBREAK=1',
+            '-Werror=implicit-function-declaration', '-DSAP_JAILBREAK=1',
             '-DSG_DRIVER=0', '-DSGRebindImport=SAPJBRebindImport',
             '-I'+str(ROOT/'src'), '-I'+str(build), '-I'+str(PROJECT/'vitrine-upstream/tweak/Sources'),
             '-F'+str(framework), *(ROOT/'src'/name for name in SOURCE_FILES),
@@ -101,7 +112,7 @@ def main():
             PROJECT/'vitrine-upstream/tweak/Sources/Core/SGRebind.m',
             '-framework', 'AudioToolbox', '-framework', 'Foundation', '-framework', 'UIKit',
             '-framework', 'AVFAudio', '-framework', 'CoreGraphics', '-framework', 'AVFoundation',
-            '-framework', 'CoreMedia', '-framework', 'CydiaSubstrate',
+            '-framework', 'CoreMedia', '-framework', 'Network', '-framework', 'CydiaSubstrate',
             '-Wl,-rpath,'+framework_path, '-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib', '-o', companion)
         companion_dependencies = subprocess.check_output(['otool', '-L', str(companion)], text=True)
         substrate = '/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate'
@@ -124,13 +135,15 @@ def main():
             run('codesign', '--force', '--sign', '-', '--timestamp=none', lib)
             run('codesign', '--verify', '--strict', lib)
             run('xcrun', 'dyld_info', '-validate_only', lib)
-        # One injected image. Its required dependency loads Pixie before Vitrine's constructors.
-        (libs/'spotifyglass.plist').write_text('{ Filter = { Executables = ( "Spotify" ); }; }\n')
+        # Either filter can load Pixie; dyld initializes the shared dependency once.
+        filter_data = plistlib.dumps({'Filter': {'Executables': ['Spotify']}})
+        for name in ['spotifyglass.plist', 'SpotifyAudioProbe.plist']:
+            (libs/name).write_bytes(filter_data)
         control = stage/'DEBIAN'
         control.mkdir()
         (control/'control').write_text(f'''Package: com.pixie.spotify
 Name: Spotify Pixie
-Version: 9.1.90-1
+Version: 9.1.90-1.2
 Architecture: {architecture}
 Description: Vitrine UI and Pixie downloads for Spotify 9.1.90
 Maintainer: Pixie
@@ -150,29 +163,36 @@ Replaces: com.vitrine.tweak
             'Use the original Spotify app, not an IPA with Vitrine/Pixie already injected.\n'
             'Restart Spotify after installation. This is a jailbreak tweak, not a LiveContainer import.\n'
             'Includes Vitrine, Pixie Download Manager (English), native offline patches, and the local artwork crash fix.\n'
-            'WAV capture is compiled out. Spotify files and account data are not modified on disk.\n'
-            'Unsupported executable fingerprints are refused before Pixie installs hooks.\n'
+            'Spotify files and account data are not modified on disk.\n'
+            'On unsupported Spotify builds, Pixie keeps its menu/logs visible and reports the exact refusal. Download hooks remain disabled.\n'
+            'Includes current detailed diagnostics (optional), single JSON export, Me links and the supplied GitHub artwork.\n'
+            'Includes the menu interaction fix and Reset log; action/trace recording is disabled while Diagnostics is off.\n'
             'The custom Live Activity widget/App Intents extension requires IPA integration; it is not installed by this tweak DEB.\n')
         # Real payload sizes and root ownership; no maintainer scripts or account-specific data.
         installed_size = sum(p.stat().st_size for p in stage.rglob('*') if p.is_file())//1024 + 1
         with (control/'control').open('a') as file: file.write(f'Installed-Size: {installed_size}\n')
-        package = args.output/f'Spotify-9.1.90-Pixie-{scheme}.deb'
+        package = args.output/f'Spotify-9.1.90-Vitrine-Pixie-v1.2-{scheme}.deb'
         run('dpkg-deb', '--root-owner-group', '-Zgzip', '--build', stage, package)
         run('dpkg-deb', '--info', package)
         manifests.append({'file':package.name, 'architecture':architecture, 'prefix':prefix or '/',
                           'sha256':hashlib.sha256(package.read_bytes()).hexdigest()})
+    source_files = sorted(set((ROOT/'src').glob('*.[chm]')) | {Path(__file__).resolve()})
     (args.output/'manifest.json').write_text(json.dumps({'packages':manifests,'native_patch_tests_passed':True,
-        'jailbreak_device_tested':False,'ipa_unchanged':True}, indent=2)+'\n')
+        'jailbreak_device_tested':False,'ipa_unchanged':True,
+        'vitrine_input_sha256':hashlib.sha256(args.vitrine_dylib.read_bytes()).hexdigest(),
+        'sources':{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in source_files}}, indent=2)+'\n')
     (args.output/'README.txt').write_text('Spotify 9.1.90 Pixie — jailbreak DEBs\n\n'
-        'rootless: Spotify-9.1.90-Pixie-rootless.deb (iphoneos-arm64, /var/jb)\n'
-        'rootful: Spotify-9.1.90-Pixie-rootful.deb (iphoneos-arm)\n'
+        'rootless: Spotify-9.1.90-Vitrine-Pixie-v1.2-rootless.deb (iphoneos-arm64, /var/jb)\n'
+        'rootful: Spotify-9.1.90-Vitrine-Pixie-v1.2-rootful.deb (iphoneos-arm)\n'
         'Install ONE matching your jailbreak, then close and reopen Spotify.\n'
         'Use the original Spotify app, not an IPA with Vitrine/Pixie already injected.\n'
         'These are not IPA/LiveContainer installation files.\n'
-        'Includes Vitrine + Pixie, English-only menu, downloads and local-cover fix.\n'
+        'Includes Vitrine + Pixie, English-only menu, downloads, fixed mode 0, one support log and local-cover fix.\n'
+        'Latest v1.2 menu interaction fix, Reset log, optional detailed diagnostics and Me links are included.\n'
         'Targets the exact Spotify 9.1.90 executable. Newer versions need adaptation.\n'
         'The custom Live Activity widget/App Intents extension requires IPA integration and is not included.\n'
         'Package/signature/guard checks were run locally; execution on a jailbroken iPhone has not been tested.\n')
+    run('python3', ROOT/'tools/verify_debs.py', args.output)
     print(json.dumps(manifests, indent=2))
 
 if __name__ == '__main__': main()

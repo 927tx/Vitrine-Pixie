@@ -10,6 +10,7 @@
 #import <mach/mach.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <stdatomic.h>
+#import "BuildIdentity.h"
 #include <sys/sysctl.h>
 
 static NSMutableArray *observers;
@@ -70,6 +71,7 @@ void SAPTraceCaptureRuntimeManifest(const char *reason) {
         [images addObject:image];
     }
     SAP_TRACE("runtime","manifest",0,@{@"reason":reason?@(reason):@"unknown",@"images":images,@"hooks":SAPTraceHookManifest(),@"key_mode":SAPKeyRequestModeReport(),
+        @"pixie_revision":@SAP_BUILD_REVISION,@"vitrine_source_commit":@SAP_VITRINE_SOURCE_COMMIT,
         @"native_key_boundaries":SAPNativeKeyTraceReport(),
         @"os_version":NSProcessInfo.processInfo.operatingSystemVersionString,@"foreground_state":@(UIApplication.sharedApplication.applicationState),
         @"low_power_mode":@(NSProcessInfo.processInfo.lowPowerModeEnabled),@"route":route(),@"pre_library_calls_observed":@NO});

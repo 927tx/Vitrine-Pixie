@@ -2,7 +2,7 @@
 
 Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https://github.com/My-Name-Is-Jeff/vitrine), with native offline downloads and a download manager.
 
-**Pixie Manager: v1.2** · **Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
+**Pixie Manager: v1.2.1** · **Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
 
 ## Downloads and updates
 
@@ -10,16 +10,21 @@ Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https:/
 
 Download the IPA from the linked post. Updates and release announcements: [@glongqforks](https://t.me/glongqforks). This repository contains source code and patches; no IPA files are hosted here. GitHub's “Source code” archives are not installable apps.
 
-**Jailbreak packages:** [rootless / rootful DEBs](https://github.com/Glongq/Vitrine-Pixie/releases/tag/pixie-9.1.90-jailbreak-1). The jailbreak build has **not been tested on a jailbroken device**; the regular IPA has been tested through LiveContainer and SideStore.
+**Jailbreak packages:** [rootless / rootful DEBs](https://github.com/Glongq/Vitrine-Pixie/releases/tag/pixie-9.1.90-jailbreak-1). These remain the previous release and have not been rebuilt from v1.2.1 sources.
+
+**Regular IPA version: tested through LiveContainer and SideStore.**
+
+**Jailbreak version: NOT TESTED on a jailbroken device.**
 
 ## Pixie
 
 - Native offline downloads for tracks, albums and playlists.
 - Download the album of the currently playing track from the manager.
-- **Vitrine settings → Pixie Download Manager**: current-track actions, download status, optional diagnostics and journal/report export.
+- **Vitrine settings → Pixie Download Manager**: current-track actions, with download status inside **Audio diagnostics** and one **Send log** action for JSON diagnostic export.
+- Offline-device management lists offline-enabled registrations, marks the exact current entry with **(current)** beside its name, and offers a native **Remove** swipe action.
 - English interface.
 - Redesigned album controls, plus playlist and mix headers where Spotify supplies both Add and Download: Play on the right, separate glass controls on the left, horizontal scrolling when needed.
-- Diagnostics can be switched off. WAV capture is disabled in release builds.
+- Diagnostics can be switched off. WAV capture and its implementation have been removed.
 
 Music stays in **Spotify's offline storage**, for playback inside Spotify. Exporting ordinary MP3/M4A/OGG audio files is not implemented.
 
@@ -27,19 +32,20 @@ See [CHANGELOG.md](CHANGELOG.md) for source updates.
 
 ## Compatibility
 
-The Pixie extension targets Spotify **9.1.90**, ARM64 UUID `fbce22c17e1b3e0d9be866ff9291943e`, with Vitrine **1.0.0-beta.13** as the base. The builder checks the executable UUID and instruction bytes. Other Spotify binaries require a separate port.
+The Pixie extension targets Spotify **9.1.90**, ARM64 UUID `fbce22c17e1b3e0d9be866ff9291943e`, with Vitrine **1.0.0-beta.14** as the base, pinned to commit `ebc1cbf6ee23a8ad839e60f04f3abf862f2ea85e`. The builder checks the executable UUID and instruction bytes. Other Spotify binaries require a separate port.
 
 Native downloads and album controls were checked on an iPhone 15 Pro Max, iOS 27.0.1, using LiveContainer. Vitrine's Liquid Glass redesign requires iOS 26 or later. Long-term offline licence renewal has not been verified.
 
-## Latest update — Pixie Manager v1.2
+## Latest update — Pixie Manager v1.2.1
 
-- Detailed diagnostic tracing runs only while diagnostics are enabled.
-- Export diagnostics as one JSON file.
-- Manage offline devices and remove selected devices to free download slots.
+- Updated Vitrine from beta 13 to beta 14
+- Slightly improved Pixie Manager interface
+- Improved offline device management
+- Improved download stability and audio hooks
 
-Local component tests and the settings simulator passed during development. The latest diagnostics changes have not yet been verified on an iPhone. The regular download baseline was tested through LiveContainer and SideStore.
+Local component tests and the settings simulator passed during development.
 
-The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from v1.2 sources. See [CHANGELOG.md](CHANGELOG.md).
+The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from v1.2.1 sources. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Source and build
 

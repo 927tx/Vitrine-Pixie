@@ -156,12 +156,15 @@ static unsigned long long actionBytes;
 static const unsigned long long maximumActionBytes = 2 * 1024 * 1024;
 
 void SAPJournalNoteAction(NSString *name,NSDictionary *facts) {
+    if(!SAPDiagnosticsEnabled())return;
     if(![name isKindOfClass:NSString.class] || !name.length || name.length>80 ||
        ![facts isKindOfClass:NSDictionary.class])return;
     NSString *eventName=[name copy];NSDictionary *values=[facts copy];
     // Preserve the observation time before this event reaches the journal queue.
     SAP_TRACE("pixie_action",name.UTF8String,SAPTraceCurrentOperation(),values);
+    uint64_t epoch=SAPTraceGeneration();
     onJournal(^{
+        if(!SAPDiagnosticsEnabled()||epoch!=SAPTraceGeneration())return;
         NSDictionary *entry=@{@"at":stamp(rightNow())?:@0,@"event":eventName,@"facts":values};
         NSData *line=[NSJSONSerialization dataWithJSONObject:entry options:NSJSONWritingSortedKeys error:NULL];
         if(!line)return;
@@ -947,6 +950,7 @@ static void diagnosticsChanged(void) {
         }
         os_unfair_lock_unlock(&lock);
         if(logStream){fclose(logStream);logStream=NULL;}
+        if(actionStream){fclose(actionStream);actionStream=NULL;}
         lastRefresh=0;lastQuotaSample=0;
     });
 }
@@ -1084,8 +1088,7 @@ void SAPJournalRefresh(NSString *reason) {
         if (reason.length) { NSLog(@"[SpotifyAudioProbe] journal refresh (%@)", reason); journalLog(@"refresh", @"%@", reason); }
     });
 }
-void SAPJournalReset(void) {
-    onJournal(^{
+static void resetJournalState(void) {
         os_unfair_lock_lock(&lock);
         [tracks removeAllObjects]; [transitions removeAllObjects]; [errorEvents removeAllObjects];
         [contextAddedEvents removeAllObjects]; [entityEvents removeAllObjects]; [entities removeAllObjects];
@@ -1096,9 +1099,26 @@ void SAPJournalReset(void) {
         session = nil; pollTicks = 0;lastQuotaSample=0; stopPolling(); cancelLifetimes();[reconciliationTimes removeAllObjects];
         SAPPlayerTraceReset();
         if(SAPTraceIsActive())SAPPlayerTraceSetActive(YES);
-        NSLog(@"[SpotifyAudioProbe] journal reset");
+        if(SAPDiagnosticsEnabled())NSLog(@"[SpotifyAudioProbe] journal reset");
         journalWrite(@"reset", @"journal cleared by user");
-    });
+}
+void SAPJournalReset(void) {onJournal(^{resetJournalState();});}
+BOOL SAPJournalResetLogFiles(NSError **error) {
+    setup();__block NSError *failure=nil;
+    dispatch_block_t clear=^{
+        resetJournalState();
+        if(logStream){fclose(logStream);logStream=NULL;}logBytes=0;
+        if(actionStream){fclose(actionStream);actionStream=NULL;}actionBytes=0;
+        os_unfair_lock_lock(&lock);[actionEvents removeAllObjects];os_unfair_lock_unlock(&lock);
+        for(NSString *name in @[@"SpotifyAudioProbeJournal.log",@"SpotifyAudioProbeJournal.1.log",@"PixieActions.log",@"PixieActions.1.log",
+            @"PixieSupportLog.json",@"SpotifyAudioProbe.json",@"SpotifyAudioProbeTracks.json",@"SpotifyAudioProbeTracks.txt"]) {
+            NSURL *url=documentsURL(name);NSError *e=nil;
+            if([NSFileManager.defaultManager fileExistsAtPath:url.path]&&![NSFileManager.defaultManager removeItemAtURL:url error:&e]&&!failure)failure=e;
+        }
+        lastRefresh=0;lastQuotaSample=0;
+    };
+    if(SAPJournalOnOwnQueue())clear();else dispatch_sync(journal,clear);
+    if(error)*error=failure;return failure==nil;
 }
 
 // --- отчёты ---------------------------------------------------------------
@@ -1197,6 +1217,7 @@ NSDictionary *SAPJournalReport(void) {
         @"caller_available": @(atomic_load(&callerAvailable)), @"subscribed": @(subscribed),
         @"tracked_tracks": @(tracks.count), @"reported_tracks": @(list.count),
         @"requested_tracks": @(requested), @"add_errors": @(withAddError),
+        @"requested_tracks_scope":@"Unique tracks with an observed entity request or AddDownload in this journal; native synchronization can also occur without these observations",
         @"pending_tracks": @(pending), @"state_counts": counts,
         @"session": session ? [session copy] : @{}, @"session_history": [sessionHistory copy],
         @"entities": [[NSDictionary alloc] initWithDictionary:entities copyItems:YES], @"entity_events": [entityEvents copy],

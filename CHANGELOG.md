@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-23 — Pixie Manager v1.2.1 sources
+
+- Updated Vitrine from beta 13 to beta 14
+- Slightly improved Pixie Manager interface
+- Improved offline device management
+- Improved download stability and audio hooks
+
+**Regular IPA version: tested through LiveContainer and SideStore.**
+
+**Jailbreak version: NOT TESTED on a jailbroken device.**
+
+This publication updates source code and patches. No IPA is uploaded here, and the previous jailbreak release and DEBs have not been rebuilt.
+
 ## 2026-10-21 — Pixie Manager v1.2 sources
 
 - Added optional detailed diagnostic tracing and a single JSON export.
