@@ -1,41 +1,215 @@
 
-name: Test Vitrine beta 14 + Pixie
+name: Build Spotify Vitrine b14 + Pixie 1.2.1
 
 on:
   workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "Direct URL to Spotify 9.1.90 + Vitrine beta 14 IPA"
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+env:
+  THEOS: ${{ github.workspace }}/theos
+  VITRINE_COMMIT: ebc1cbf6ee23a8ad839e60f04f3abf862f2ea85e
+  OUTPUT_IPA: NativeDownloads/outputs/pixie-9.1.90/Spotify-9.1.90-Vitrine-b14-Pixie-v1.2.1.ipa
+
 jobs:
-  compatibility:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout Pixie
+      - name: Checkout Pixie 1.2.1
         uses: actions/checkout@v4
 
-      - name: Clone Vitrine beta 14
-        run: |
-          git clone \
-            --branch v1.0.0-beta.14 \
-            --depth 1 \
-            https://github.com/My-Name-Is-Jeff/vitrine.git \
-            vitrine
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
 
-      - name: Verify Vitrine revision
+      - name: Verify Xcode SDK
         run: |
-          git -C vitrine log -1 --format='%h %s'
-          git -C vitrine describe --tags --exact-match
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Check Pixie patch compatibility
+          SDK_MAJOR=$(xcrun --sdk iphoneos --show-sdk-version | cut -d. -f1)
+          if [ "$SDK_MAJOR" -lt 26 ]; then
+            echo "::error::Pixie 1.2.1 requires iOS SDK 26 or newer."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          brew install make dpkg ldid
+
+      - name: Install Theos
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          path: theos
+          submodules: recursive
+
+      - name: Verify Pixie 1.2.1 source
         run: |
           set -euo pipefail
 
-          PATCH="$GITHUB_WORKSPACE/patches/vitrine-pixie.patch"
+          test -f patches/vitrine-pixie.patch
+          test -f NativeDownloads/tools/build_vitrine_9190.py
 
-          test -f "$PATCH"
+          grep -Fq "$VITRINE_COMMIT" BUILD.md || {
+            echo "::error::Pixie checkout does not document the expected beta 14 revision. Sync your fork with upstream."
+            exit 1
+          }
 
-          git -C vitrine apply --check "$PATCH"
+      - name: Download Vitrine beta 14 IPA
+        env:
+          IPA_URL: ${{ inputs.ipa_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p ipa
+          curl -fL --retry 3 "$IPA_URL" -o ipa/vitrine.ipa
+          unzip -tq ipa/vitrine.ipa
 
-          echo "Pixie source patch applies cleanly."
+      - name: Verify input Spotify version
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import plistlib
+          import zipfile
+
+          path = "ipa/vitrine.ipa"
+          with zipfile.ZipFile(path) as z:
+              names = [
+                  n for n in z.namelist()
+                  if n.startswith("Payload/")
+                  and n.endswith(".app/Info.plist")
+                  and n.count("/") == 2
+              ]
+              if len(names) != 1:
+                  raise SystemExit("Expected one main app Info.plist")
+
+              info = plistlib.loads(z.read(names[0]))
+              version = info.get("CFBundleShortVersionString")
+              print("Spotify version:", version)
+
+              if version != "9.1.90":
+                  raise SystemExit("Expected Spotify 9.1.90")
+
+              app = names[0].removesuffix("Info.plist")
+              if app + "Frameworks/spotifyglass.dylib" not in z.namelist():
+                  raise SystemExit("Input IPA has no Vitrine dylib")
+
+              if app + "Frameworks/SpotifyAudioProbe.dylib" in z.namelist():
+                  raise SystemExit("Input already contains Pixie; supply Vitrine-only IPA")
+
+          print("Input structure verified.")
+          PY
+
+      - name: Clone pinned Vitrine beta 14
+        run: |
+          set -euo pipefail
+          git clone https://github.com/My-Name-Is-Jeff/vitrine.git vitrine
+          git -C vitrine checkout "$VITRINE_COMMIT"
+
+          ACTUAL=$(git -C vitrine rev-parse HEAD)
+          test "$ACTUAL" = "$VITRINE_COMMIT"
+
+      - name: Apply Pixie 1.2.1 source patch
+        run: |
+          set -euo pipefail
+          git -C vitrine apply --check ../patches/vitrine-pixie.patch
+          git -C vitrine apply ../patches/vitrine-pixie.patch
+
+      - name: Generate Spotify flags
+        run: |
+          set -euo pipefail
+          mkdir -p vitrine/ipa
+          cp ipa/vitrine.ipa vitrine/ipa/spotify.ipa
+          cd vitrine
+          make flags IPA=ipa/spotify.ipa
+
+      - name: Compile patched Vitrine beta 14
+        run: |
+          set -euo pipefail
+          cd vitrine
+          env -u MAKELEVEL gmake -C tweak package SG_DRIVER=0 -j4
+
+      - name: Prepare Pixie Vitrine dylib
+        run: |
+          set -euo pipefail
+          cp vitrine/tweak/.theos/obj/spotifyglass.dylib \
+            /tmp/pixie-spotifyglass.dylib
+
+          codesign --force --sign - --timestamp=none \
+            /tmp/pixie-spotifyglass.dylib
+
+      - name: Build Pixie 1.2.1 IPA
+        run: |
+          set -euo pipefail
+
+          python3 NativeDownloads/tools/build_vitrine_9190.py \
+            ipa/vitrine.ipa \
+            --vitrine-dylib /tmp/pixie-spotifyglass.dylib \
+            --output "$OUTPUT_IPA"
+
+      - name: Validate finished IPA
+        run: |
+          set -euo pipefail
+
+          test -s "$OUTPUT_IPA"
+          unzip -tq "$OUTPUT_IPA"
+
+          python3 - <<'PY'
+          import os
+          import plistlib
+          import zipfile
+
+          path = os.environ["OUTPUT_IPA"]
+
+          with zipfile.ZipFile(path) as z:
+              names = z.namelist()
+              infos = [
+                  n for n in names
+                  if n.startswith("Payload/")
+                  and n.endswith(".app/Info.plist")
+                  and n.count("/") == 2
+              ]
+              if len(infos) != 1:
+                  raise SystemExit("Main application not found")
+
+              info = plistlib.loads(z.read(infos[0]))
+              app = infos[0].removesuffix("Info.plist")
+              executable = info["CFBundleExecutable"]
+
+              required = [
+                  app + executable,
+                  app + "Frameworks/spotifyglass.dylib",
+                  app + "Frameworks/SpotifyAudioProbe.dylib",
+              ]
+
+              for item in required:
+                  if item not in names:
+                      raise SystemExit(f"Missing required file: {item}")
+
+              if info["CFBundleShortVersionString"] != "9.1.90":
+                  raise SystemExit("Incorrect Spotify version")
+
+              print("Spotify 9.1.90 verified.")
+              print("Vitrine dylib present.")
+              print("Pixie companion dylib present.")
+              print("Archive integrity verified.")
+          PY
+
+      - name: Upload finished IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spotify-9.1.90-Vitrine-b14-Pixie-1.2.1
+          path: NativeDownloads/outputs/pixie-9.1.90/Spotify-9.1.90-Vitrine-b14-Pixie-v1.2.1.ipa
+          if-no-files-found: error
+          retention-days: 7
