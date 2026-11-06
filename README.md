@@ -2,21 +2,25 @@
 
 Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https://github.com/My-Name-Is-Jeff/vitrine), with native offline downloads and a download manager.
 
-**Pixie Manager: v1.2.1** · **Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
+**Pixie Manager: v1.4** · **Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
 
 ## Downloads and updates
 
-**[Download Spotify 9.1.90 + Pixie Manager — Telegram post](https://t.me/glongqforks/5)**
+**[Download Spotify 9.1.90 + Pixie Manager — Telegram post](https://t.me/glongqforks/22)**
 
 Download the IPA from the linked post. Updates and release announcements: [@glongqforks](https://t.me/glongqforks). This repository contains source code and patches; no IPA files are hosted here. GitHub's “Source code” archives are not installable apps.
 
-**Jailbreak packages:** [rootless / rootful DEBs](https://github.com/Glongq/Vitrine-Pixie/releases/tag/pixie-9.1.90-jailbreak-1). These remain the previous release and have not been rebuilt from v1.2.1 sources.
+**Jailbreak packages:** [rootless / rootful DEBs](https://github.com/Glongq/Vitrine-Pixie/releases/tag/pixie-9.1.90-jailbreak-1). These remain the previous release and have not been rebuilt from v1.4 sources.
 
 **Regular IPA version: tested through LiveContainer and SideStore.**
 
 **Jailbreak version: NOT TESTED on a jailbroken device.**
 
 ## Pixie
+
+<p align="left">
+  <img src="Images/pixie-manager.gif" width="200" alt="Pixie Manager downloading artist releases">
+</p>
 
 - Native offline downloads for tracks, albums and playlists.
 - Download the album of the currently playing track from the manager.
@@ -26,32 +30,30 @@ Download the IPA from the linked post. Updates and release announcements: [@glon
 - Redesigned album controls, plus playlist and mix headers where Spotify supplies both Add and Download: Play on the right, separate glass controls on the left, horizontal scrolling when needed.
 - Diagnostics can be switched off. WAV capture and its implementation have been removed.
 
-Music stays in **Spotify's offline storage**, for playback inside Spotify. Exporting ordinary MP3/M4A/OGG audio files is not implemented.
+Music stays in **Spotify's offline storage**, for playback inside Spotify. Downloaded tracks can also be exported as ordinary audio files (M4A by default, Ogg optional) from the **Downloaded tracks** manager or the native share menu.
 
 See [CHANGELOG.md](CHANGELOG.md) for source updates.
 
 ## Compatibility
 
-The Pixie extension targets Spotify **9.1.90**, ARM64 UUID `fbce22c17e1b3e0d9be866ff9291943e`, with Vitrine **1.0.0-beta.14** as the base, pinned to commit `ebc1cbf6ee23a8ad839e60f04f3abf862f2ea85e`. The builder checks the executable UUID and instruction bytes. Other Spotify binaries require a separate port.
+The Pixie extension targets Spotify **9.1.90**, ARM64 UUID `fbce22c17e1b3e0d9be866ff9291943e`, with Vitrine **1.0.0-beta.16** as the base, pinned to commit `36d3b38ec39c0b8b696f1d2db026ca9e9939bf14`. The builder checks the executable UUID and instruction bytes. Other Spotify binaries require a separate port.
 
 Native downloads and album controls were checked on an iPhone 15 Pro Max, iOS 27.0.1, using LiveContainer. Vitrine's Liquid Glass redesign requires iOS 26 or later. Long-term offline licence renewal has not been verified.
 
-## Latest update — Pixie Manager v1.2.1
+## Latest update — Vitrine beta 16 + Pixie Manager v1.4
 
-- Updated Vitrine from beta 13 to beta 14
-- Slightly improved Pixie Manager interface
-- Improved offline device management
-- Improved download stability and audio hooks
+- Export downloaded tracks to files: M4A (default) or Ogg
+- Share audio files straight from the Spotify share menu
+- Downloaded tracks manager: browse by artist and release, select, export or delete
+- Faster artist downloads
 
-Local component tests and the settings simulator passed during development.
-
-The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from v1.2.1 sources. See [CHANGELOG.md](CHANGELOG.md).
+The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from these sources. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Source and build
 
 This is a compact source overlay: Pixie sources plus the changes to Vitrine, rather than a copy of its entire repository or Git history.
 
-See [BUILD.md](BUILD.md) for the pinned upstream revision, patch application and build commands. [SOURCE.md](SOURCE.md) records authorship, scope and source hashes.
+See [BUILD.md](BUILD.md) for the pinned upstream revision, patch application and build commands. The [integration map](NativeDownloads/docs/INTEGRATION-MAP.md) describes the module layout. [SOURCE.md](SOURCE.md) records authorship, scope and source hashes.
 
 ## Credits
 

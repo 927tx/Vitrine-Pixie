@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-11-06 — Pixie Manager v1.4
+
+- Export downloaded tracks to files: M4A (default) or Ogg
+- Share audio files straight from the Spotify share menu
+- Downloaded tracks manager: browse by artist and release, select, export or delete
+- Faster artist downloads
+
+Source update only. No IPA or DEB is uploaded with this update.
+
+## 2026-10-27 — Pixie Manager v1.3
+
+- Refactored Pixie Manager code
+
+Source update only. No IPA or DEB is uploaded with this update.
+
+## 2026-10-26 — Vitrine beta 16 + Pixie Manager v1.3
+
+- Updated Vitrine to beta 16
+- Download releases directly from artist profiles, download separately or into a new or existing playlist
+
+Source update only. No IPA or DEB is uploaded with this update.
+
 ## 2026-10-23 — Pixie Manager v1.2.1 sources
 
 - Updated Vitrine from beta 13 to beta 14

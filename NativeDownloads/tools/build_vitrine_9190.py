@@ -1,3 +1,5 @@
+from export_release_materials import notices,retain_relink_sources
+from build_native_share import build_native_share
 """Build the guarded SpotifyAudioProbe overlay for the supplied Vitrine 9.1.90 IPA."""
 import argparse
 import hashlib
@@ -5,6 +7,7 @@ import json
 import plistlib
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -13,17 +16,12 @@ from patch_native_restrictions import patch as patch_limits, guard_header, limit
 from patch_key_request_mode import patch as patch_key_mode, key_header
 from patch_native_trace import patch as patch_native_trace,header as native_trace_header
 from fix_sideload_dependencies import pin_substrate_dependency, SUBSTRATE
+from signing_metadata import sign_preserving_entitlements
+from patch_export_port import patch as patch_audio_export
 
-ROOT = Path(__file__).resolve().parents[1]
-UUID = bytes.fromhex("fbce22c17e1b3e0d9be866ff9291943e")
-SOURCE_FILES = [
-    "AudioProbe.c", "Diagnostics.m", "Localization.m",
-    "AVAudioHooks.m", "SourceGraph.c", "OfflineFlags.m", "WireProto.m",
-    "OfflineConfig.m", "TrackJournal.m", "NativeErrorLog.m", "PlayerTrace.m",
-    "NativeOffline.m", "TrackDownload.m", "AudioProbeUI.m", "DownloadSettingsUI.m",
-    "EncodedAudio.m", "AlbumMetadata.m", "SupportLog.m", "DownloadCompatibility.m", "OfflineDevices.m",
-    "DiagnosticTrace.m", "TracePlatform.m", "NativeKeyTrace.m",
-]
+from pixie_target import PROFILE, ROOT, resolve_source, companion_sources, include_directories
+UUID = bytes.fromhex(PROFILE["uuid"])
+SOURCE_FILES = [str(path.relative_to(ROOT / "src")) for path in companion_sources()]
 
 
 def run(*command):
@@ -35,10 +33,13 @@ def main():
     parser.add_argument("ipa", type=Path)
     parser.add_argument("--vitrine-dylib", type=Path, help="Vitrine rebuilt from the local sources")
     parser.add_argument("--fixed-key-mode-zero", action="store_true", help="Recovery rollback: use the direct mode-0 instruction from the last working build, without the runtime selector")
-    parser.add_argument("--output", type=Path, default=ROOT / "outputs/pixie-9.1.90/Spotify-9.1.90-Pixie.ipa")
+    parser.add_argument("--output", type=Path, default=ROOT.parent / "outputs" /
+        datetime.now().strftime("build-%Y%m%d-%H%M%S-%f") / f"Spotify-9.1.90-Vitrine-b16-Pixie-v{PROFILE['pixie_version']}.ipa")
     args = parser.parse_args()
     source = args.ipa.resolve()
     output = args.output.resolve()
+    if output.exists():
+        parser.error("Choose a new output folder; the output IPA already exists")
     vitrine = args.vitrine_dylib.resolve() if args.vitrine_dylib else None
     if vitrine:
         run("codesign", "--verify", "--strict", vitrine)
@@ -47,13 +48,13 @@ def main():
             raise RuntimeError("The rebuilt Vitrine lacks the album action row")
     if not source.is_file():
         parser.error("Input IPA not found")
-    if (ROOT / "src/NativeRestrictionsPatch.h").read_text() != guard_header():
+    if resolve_source("NativeRestrictionsPatch.h").read_text() != guard_header():
         raise RuntimeError("Native restriction header is out of sync")
-    if (ROOT / "src/OfflineLimits.h").read_text() != limits_header():
+    if resolve_source("OfflineLimits.h").read_text() != limits_header():
         raise RuntimeError("Offline limits header is out of sync")
-    if (ROOT / "src/NativeKeyModePatch.h").read_text() != key_header():
+    if resolve_source("NativeKeyModePatch.h").read_text() != key_header():
         raise RuntimeError("Native key-mode header is out of sync")
-    if (ROOT / "src/NativeTracePatch.h").read_text() != native_trace_header():
+    if resolve_source("NativeTracePatch.h").read_text() != native_trace_header():
         raise RuntimeError("Native trace header is out of sync")
 
     with ZipFile(source) as archive:
@@ -75,6 +76,7 @@ def main():
     patched, limits = patch_limits(patched)
     patched, key = patch_key_mode(patched, runtime_selectable=False)
     patched, native_trace = patch_native_trace(patched)
+    patched, audio_export = patch_audio_export(patched)
     key['implementation']='verified static observation boundary restores fixed w2=0 before the original indirect call'
     key['configuration_source']='verified_static_trace_argument'
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -91,19 +93,20 @@ def main():
         run("xcrun", "dyld_info", "-validate_only", staged_vitrine)
         vitrine = staged_vitrine
         companion = temporary / "SpotifyAudioProbe.dylib"
+        swift=build_native_share(temporary/"NativeShareBridge.o",sdk)
         run("xcrun", "clang", "-dynamiclib", "-arch", "arm64", "-target", "arm64-apple-ios15.0",
             "-isysroot", sdk, "-fobjc-arc", "-std=gnu11", "-O2", "-fvisibility=hidden",
             "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-nullability-completeness",
-            "-Werror=implicit-function-declaration", "-I" + str(ROOT / "src"),
-            *(ROOT / "src" / name for name in SOURCE_FILES),
+            "-Werror=implicit-function-declaration", "-DSAP_RESEARCH_DUMP=0", *("-I" + str(path) for path in include_directories()),
+            *companion_sources(), "-lm", "-lsqlite3", *swift["link_args"],
             "-framework", "AudioToolbox", "-framework", "Foundation", "-framework", "UIKit",
             "-framework", "AVFAudio", "-framework", "CoreGraphics", "-framework", "AVFoundation",
-            "-framework", "CoreMedia", "-framework", "Network", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "-o", companion)
+            "-framework", "CoreMedia", "-framework", "Network", "-framework", "ImageIO", "-framework", "QuartzCore", "-framework", "LinkPresentation", "-framework", "Security", "-framework", "MessageUI", "-framework", "UniformTypeIdentifiers", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "-o", companion)
         run("codesign", "--force", "--sign", "-", "--timestamp=none", companion)
         binary = temporary / "Spotify"
         binary.write_bytes(patched)
         binary.chmod(0o755)
-        run("codesign", "--force", "--sign", "-", "--timestamp=none", binary)
+        signing_metadata = sign_preserving_entitlements(binary, native, temporary / "Spotify.entitlements.plist")
         run("xcrun", "dyld_info", "-validate_only", binary)
         imports = subprocess.check_output(["xcrun", "dyld_info", "-imports", str(binary)], text=True)
         for change in audio["changes"]:
@@ -115,13 +118,17 @@ def main():
                 replacement = binary.read_bytes() if member.filename == executable else vitrine.read_bytes() if vitrine and member.filename == "Payload/Spotify.app/Frameworks/spotifyglass.dylib" else original.read(member.filename)
                 result.writestr(member, replacement)
             result.write(companion, "Payload/Spotify.app/Frameworks/SpotifyAudioProbe.dylib")
+            for name,data in notices().items():
+                if name in original.namelist():raise ValueError("Unexpected preexisting export license path")
+                result.writestr(name,data)
 
     with ZipFile(output) as check:
         if check.testzip() is not None:
             raise RuntimeError("IPA ZIP integrity check failed")
     print(json.dumps({"output": str(output), "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
                       "spotify_uuid": UUID.hex(), "audio_imports": audio,
-                      "native_limits": limits, "key_request_mode": key, "native_observation": native_trace,
+                      "native_limits": limits, "key_request_mode": key, "native_observation": native_trace, "audio_export": audio_export,
+                      "signing_metadata": signing_metadata,
                       "embedded_substrate_dependency": substrate_dependency}, indent=2))
 
 
